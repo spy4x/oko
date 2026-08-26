@@ -6,30 +6,13 @@
 [![CI](https://img.shields.io/badge/CI-woodpecker-blue)](https://github.com/spy4x/oko)
 
 A single-page server-rendered dashboard for any self-hosted homelab.
+**Oko** (Russian: око — "eye") fans out gatus badge SVGs in parallel
+behind a 60-second in-memory single-flight cache, renders one HTML
+page listing every service with its current status and 30-day uptime.
 Drop a JSON catalog at `/app/config.json`, point the env vars at your
-gatus instances, and Oko fans out the badge SVGs in parallel behind a
-60-second in-memory single-flight cache and renders one HTML page
-listing every service with its current status and 30-day uptime.
-
-**Oko** (Russian: око — "eye") is a tiny server-rendered dashboard for
-every self-hosted service across a homelab.
+gatus instances, and you're done.
 
 **Live example:** [https://dash.antonshubin.com/](https://dash.antonshubin.com/)
-
-```
- browser ──GET /──► oko (Go) :8080
-                     │
-                     ├─ 1. cache hit? return immediately
-                     ├─ 2. fetch gatus badges in parallel
-                     │     ├─► uptime-cloud.${DOMAIN}
-                     │     └─► uptime-home.${DOMAIN}
-                     ├─ 3. parse SVG fill + uptime text
-                     ├─ 4. render HTML
-                     └─ 5. cache 60s
-                                      ▲
-                                      │
-                                  (SVG responses)
-```
 
 ![Oko dashboard — desktop and mobile views](docs/screenshots/dashboard.webp)
 

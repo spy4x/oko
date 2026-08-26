@@ -16,13 +16,43 @@
           "gatus_host": "uptime-cloud"
         },
         {
-          "name": "Gitea",
+          "name": "Git service",
           "url": "https://git.${DOMAIN}",
           "icon": "📦",
-          "description": "Self-hosted Git service",
+          "description": "Self-hosted Git repositories with web UI",
           "product": "Gitea",
           "product_url": "https://about.gitea.com/",
           "endpoint": "home_gitea",
+          "gatus_host": "uptime-cloud"
+        },
+        {
+          "name": "Photo library",
+          "url": "https://photos.${DOMAIN}",
+          "icon": "📸",
+          "description": "Self-hosted photo and video backup",
+          "product": "Immich",
+          "product_url": "https://immich.app/",
+          "endpoint": "home_immich",
+          "gatus_host": "uptime-cloud"
+        },
+        {
+          "name": "Bookmarks",
+          "url": "https://links.${DOMAIN}",
+          "icon": "🔖",
+          "description": "Bookmark and link archiving",
+          "product": "Linkwarden",
+          "product_url": "https://linkwarden.app/",
+          "endpoint": "home_linkwarden",
+          "gatus_host": "uptime-cloud"
+        },
+        {
+          "name": "Notes",
+          "url": "https://notes.${DOMAIN}",
+          "icon": "📝",
+          "description": "Markdown notes and PKM",
+          "product": "Trilium Notes",
+          "product_url": "https://github.com/zadam/trilium",
+          "endpoint": "home_trilium",
           "gatus_host": "uptime-cloud"
         }
       ]
@@ -31,13 +61,53 @@
       "name": "Cloud",
       "services": [
         {
-          "name": "Vaultwarden",
+          "name": "Password manager",
           "url": "https://passwords.${DOMAIN}",
           "icon": "🔑",
-          "description": "Bitwarden-compatible password manager",
+          "description": "Password and secrets vault",
           "product": "Vaultwarden",
           "product_url": "https://github.com/dani-garcia/vaultwarden",
           "endpoint": "cloud_vaultwarden",
+          "gatus_host": "uptime-home"
+        },
+        {
+          "name": "Email",
+          "url": "https://mail.${DOMAIN}",
+          "icon": "✉️",
+          "description": "Mail server with JMAP, IMAP, SMTP",
+          "product": "Stalwart",
+          "product_url": "https://stalw.art/",
+          "endpoint": "cloud_stalwart",
+          "gatus_host": "uptime-home"
+        },
+        {
+          "name": "Calendar + contacts",
+          "url": "https://cal.${DOMAIN}",
+          "icon": "📅",
+          "description": "CalDAV server with web UI",
+          "product": "Radicale",
+          "product_url": "https://radicale.org/",
+          "endpoint": "cloud_radicale",
+          "gatus_host": "uptime-home"
+        },
+        {
+          "name": "File sync",
+          "url": "https://sync.${DOMAIN}",
+          "icon": "🔄",
+          "description": "Continuous file synchronization across devices",
+          "product": "Syncthing",
+          "product_url": "https://syncthing.net/",
+          "endpoint": "cloud_syncthing",
+          "gatus_host": "uptime-home"
+        },
+        {
+          "name": "Push notifications",
+          "url": "https://ntfy.${DOMAIN}",
+          "icon": "🔔",
+          "description": "Self-hosted pub-sub notification service",
+          "product": "ntfy",
+          "product_url": "https://ntfy.sh/",
+          "endpoint": "cloud_ntfy",
           "gatus_host": "uptime-home"
         }
       ]

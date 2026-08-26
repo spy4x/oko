@@ -46,9 +46,8 @@ type Client struct {
 }
 
 // NewClient builds a Client from a list of FQDNs. Each FQDN must match a
-// Service.GatusHost (e.g. "uptime-cloud.antonshubin.com" → host
-// "uptime-cloud"). The leading subdomain before the first dot is taken
-// as the short name.
+// Service.GatusHost (the leading subdomain of the FQDN is taken as the
+// short name — e.g. "uptime-cloud.example.com" → short "uptime-cloud").
 //
 // hostTimeout is the per-fetch timeout — applies to both health and
 // uptime badge requests via context.WithTimeout.
@@ -65,7 +64,7 @@ func NewClient(fqdns []string, hostTimeout time.Duration) *Client {
 		hosts:   hosts,
 		http:    &http.Client{Timeout: hostTimeout},
 		timeout: hostTimeout,
-		ua:      "spy4x-oko/1.0",
+		ua:      "oko/1.0",
 	}
 }
 

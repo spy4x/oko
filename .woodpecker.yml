@@ -2,22 +2,26 @@
 #
 # Two steps:
 #   check   — run on every push and PR. Tests + build sanity.
-#   publish — only on main branch pushes. Builds the docker image and
-#             pushes to ghcr.io/spy4x/oko. Uses the GHCR_PUSH_TOKEN secret
-#             stored in Woodpecker (not in this file — never commit
-#             tokens to source).
+#   publish — only on main branch pushes (and semver tags). Builds the
+#             docker image and pushes to ghcr.io/spy4x/oko. Uses the
+#             GHCR_PUSH_TOKEN secret stored in Woodpecker (not in this
+#             file — never commit tokens to source).
 #
-# Auto-tag handles semver tags (vX.Y.Z → 1.2.3, 1.2, latest).
+# Why a `commands` step instead of woodpeckerci/plugin-docker-buildx:
+# the plugin ran the same Docker buildx flow but authenticated in a way
+# ghcr.io rejected with `insufficient_scope: authorization failed`,
+# even though the same PAT works fine from a manual `docker login` +
+# `docker push`. See issue #1 for the full investigation. Doing the
+# login ourselves via stdin + `docker login` matches what works locally.
 #
-# Required Woodpecker server config:
-#   WOODPECKER_PLUGINS_PRIVILEGED=woodpeckerci/plugin-docker-buildx
-# (buildx needs --privileged to spawn buildkit inside the plugin
-# container). Without it, the publish step is blocked at lint time
-# before the agent even gets it.
+# Auto-tag (kept from the plugin's `auto_tag: true`):
+#   push to main              → :latest
+#   semver tag (vX.Y.Z push)  → :X.Y.Z, :X.Y, :latest
 #
 # To set up the secret:
 #   Woodpecker UI → repo → Secrets → add GHCR_PUSH_TOKEN
-#   Value: GitHub PAT with `write:packages` scope.
+#   Value: GitHub PAT with `write:packages` scope (classic `ghp_*` or
+#   fine-grained with Packages: write on spy4x/oko).
 
 when:
   event: [push, pull_request, tag]
@@ -36,27 +40,41 @@ steps:
       - go build ./...
 
   publish:
-    image: woodpeckerci/plugin-docker-buildx
-    settings:
-      # `repo` is the path WITHOUT the registry prefix. The plugin adds
-      # the registry prefix (`ghcr.io/`) automatically. Combining them
-      # (e.g. `ghcr.io/spy4x/oko`) makes the plugin push to
-      # `ghcr.io/ghcr.io/spy4x/oko` — silent 404 on ghcr.io.
-      repo: spy4x/oko
-      registry: ghcr.io
-      dockerfile: Dockerfile
-      # Multi-tag: every push to main gets :latest. Semver tags (vX.Y.Z)
-      # add versioned tags (X.Y.Z, X.Y) plus update :latest.
-      auto_tag: true
-      # GitHub PAT classic (`ghp_*`) — username is the GitHub login
-      # (`spy4x`), password is the token. Fine-grained tokens work too
-      # but require `write:packages` + the matching username field.
-      username: spy4x
-      # Secret name is case-sensitive in Woodpecker — must match the
-      # exact name set in the repo's Secrets tab. The convention
-      # `GHCR_PUSH_TOKEN` is upper-snake to match the env-var feel.
-      password:
-        from_secret: GHCR_PUSH_TOKEN
+    # docker:dind bundles its own dockerd + buildx. Needs `privileged: true`
+    # on the step to start the nested daemon (mount cgroups, etc). Unlike
+    # the buildx plugin, no server-level WOODPECKER_PLUGINS_PRIVILEGED
+    # allow-list is required for a step-level privilege request.
+    image: docker:dind
+    privileged: true
+    commands:
+      # `docker:dind` auto-starts dockerd in the entrypoint. Wait until
+      # the socket is live before running any docker commands — otherwise
+      # `docker login` races the daemon startup and exits 1.
+      - until docker info >/dev/null 2>&1; do sleep 1; done
+      # `echo "$TOKEN" | docker login …` — TOKEN never lands on the
+      # command line (no shell history leak, no log exposure).
+      - echo "$GHCR_PUSH_TOKEN" | docker login ghcr.io -u spy4x --password-stdin
+      # Tag plan mirrors the old plugin's `auto_tag: true`:
+      #   main push      → :latest
+      #   semver tag     → :X.Y.Z + :X.Y + :latest
+      - |
+        set -e
+        if [ -n "$CI_COMMIT_TAG" ]; then
+          VERSION="${CI_COMMIT_TAG#v}"
+          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
+          TAGS="-t ghcr.io/spy4x/oko:${VERSION} -t ghcr.io/spy4x/oko:${MAJOR_MINOR} -t ghcr.io/spy4x/oko:latest"
+        else
+          TAGS="-t ghcr.io/spy4x/oko:latest"
+        fi
+        docker buildx build --push --pull \
+          --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+          --label "org.opencontainers.image.source=https://github.com/spy4x/oko.git" \
+          --label "org.opencontainers.image.url=https://github.com/spy4x/oko" \
+          --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          $TAGS \
+          .
+    secrets:
+      - GHCR_PUSH_TOKEN
     when:
       event: [push, tag]
       branch: main

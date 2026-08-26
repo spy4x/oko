@@ -7,8 +7,13 @@
 #             stored in Woodpecker (not in this file — never commit
 #             tokens to source).
 #
-# Tags: pushes to main overwrite :latest. Semver tags (vX.Y.Z) add
-# versioned tags (X.Y.Z) plus update :latest.
+# Auto-tag handles semver tags (vX.Y.Z → 1.2.3, 1.2, latest).
+#
+# Required Woodpecker server config:
+#   WOODPECKER_PLUGINS_PRIVILEGED=woodpeckerci/plugin-docker-buildx
+# (buildx needs --privileged to spawn buildkit inside the plugin
+# container). Without it, the publish step is blocked at lint time
+# before the agent even gets it.
 #
 # To set up the secret:
 #   Woodpecker UI → repo → Secrets → add GHCR_PUSH_TOKEN
@@ -33,12 +38,19 @@ steps:
   publish:
     image: woodpeckerci/plugin-docker-buildx
     settings:
-      repo: ghcr.io/spy4x/oko
+      # `repo` is the path WITHOUT the registry prefix. The plugin adds
+      # the registry prefix (`ghcr.io/`) automatically. Combining them
+      # (e.g. `ghcr.io/spy4x/oko`) makes the plugin push to
+      # `ghcr.io/ghcr.io/spy4x/oko` — silent 404 on ghcr.io.
+      repo: spy4x/oko
+      registry: ghcr.io
       dockerfile: Dockerfile
       # Multi-tag: every push to main gets :latest. Semver tags (vX.Y.Z)
-      # add versioned tags. The CI auto-resolves ${CI_COMMIT_TAG} so
-      # pushes to v1.2.3 produce tags 1.2.3, 1.2, and latest.
+      # add versioned tags (X.Y.Z, X.Y) plus update :latest.
       auto_tag: true
+      # GitHub PAT classic (`ghp_*`) — username is the GitHub login
+      # (`spy4x`), password is the token. Fine-grained tokens work too
+      # but require `write:packages` + the matching username field.
       username: spy4x
       password:
         from_secret: ghcr_push_token

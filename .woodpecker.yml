@@ -1,0 +1,47 @@
+# Woodpecker CI for Oko.
+#
+# Two steps:
+#   check   — run on every push and PR. Tests + build sanity.
+#   publish — only on main branch pushes. Builds the docker image and
+#             pushes to ghcr.io/spy4x/oko. Uses the GHCR_PUSH_TOKEN secret
+#             stored in Woodpecker (not in this file — never commit
+#             tokens to source).
+#
+# Tags: pushes to main overwrite :latest. Semver tags (vX.Y.Z) add
+# versioned tags (X.Y.Z) plus update :latest.
+#
+# To set up the secret:
+#   Woodpecker UI → repo → Secrets → add GHCR_PUSH_TOKEN
+#   Value: GitHub PAT with `write:packages` scope.
+
+when:
+  event: [push, pull_request, tag]
+
+steps:
+  check:
+    image: golang:1.25-alpine
+    commands:
+      - go version
+      - go mod verify
+      - go vet ./...
+      - gofmt -l .
+      # gcc/musl-dev needed for `go test -race` (cgo required).
+      - apk add --no-cache gcc musl-dev
+      - go test -race -count=1 ./...
+      - go build ./...
+
+  publish:
+    image: woodpeckerci/plugin-docker-buildx
+    settings:
+      repo: ghcr.io/spy4x/oko
+      dockerfile: Dockerfile
+      # Multi-tag: every push to main gets :latest. Semver tags (vX.Y.Z)
+      # add versioned tags. The CI auto-resolves ${CI_COMMIT_TAG} so
+      # pushes to v1.2.3 produce tags 1.2.3, 1.2, and latest.
+      auto_tag: true
+      username: spy4x
+      password:
+        from_secret: ghcr_push_token
+    when:
+      event: [push, tag]
+      branch: main

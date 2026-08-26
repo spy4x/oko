@@ -181,7 +181,7 @@ func TestBuildPage_DomainSubstitution(t *testing.T) {
 
 func TestBuildPage_TitleFromConfig(t *testing.T) {
 	cfgJSON := `{
-	  "title": "My Homelab",
+	  "title": "Service dashboard",
 	  "subtitle": "All my stuff",
 	  "servers": [{ "name": "Home", "services": [{ "name": "A", "url": "u" }] }]
 	}`
@@ -189,10 +189,10 @@ func TestBuildPage_TitleFromConfig(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	body := w.Body.String()
-	if !strings.Contains(body, "<title>My Homelab</title>") {
+	if !strings.Contains(body, "<title>Service dashboard</title>") {
 		t.Errorf("expected custom title in <title>; got %s", body)
 	}
-	if !strings.Contains(body, "<h1>My Homelab</h1>") {
+	if !strings.Contains(body, "<h1>Service dashboard</h1>") {
 		t.Errorf("expected custom title in header; got %s", body)
 	}
 	if !strings.Contains(body, "All my stuff") {

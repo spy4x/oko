@@ -26,6 +26,8 @@ listing every service with its current status and 30-day uptime.
                                   (SVG responses)
 ```
 
+![Oko dashboard — desktop and mobile views](docs/screenshots/dashboard.webp)
+
 ## Features
 
 - **Single binary, no runtime deps.** Pure Go stdlib: `net/http`,

@@ -190,3 +190,5 @@ no shell, no wget — using the binary's flag avoids a heavier base
 image just for health.
 
 [Oko GitHub](https://github.com/spy4x/oko)
+
+<!-- Last verified: 2026-08-26 — deployed live at https://dash.antonshubin.com -->

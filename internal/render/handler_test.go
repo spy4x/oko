@@ -376,13 +376,15 @@ func TestUptimeClass_Thresholds(t *testing.T) {
 		want string
 	}{
 		{"exact 100", 100.0, "good"},
-		{"just over 99.9", 99.95, "good"},
-		{"at 99.9 boundary", 99.9, "good"},
-		{"just under 99.9", 99.89, "fair"},
-		{"at 99.0 boundary", 99.0, "fair"},
-		{"just under 99.0", 98.99, "warn"},
-		{"at 95.0 boundary", 95.0, "warn"},
-		{"just under 95.0", 94.99, "bad"},
+		{"just under 100", 99.99, "good"},
+		{"at 95.0 boundary", 95.0, "good"},
+		{"just under 95.0", 94.99, "transition"},
+		{"mid transition", 92.5, "transition"},
+		{"at 90.0 boundary", 90.0, "transition"},
+		{"just under 90.0", 89.99, "warn"},
+		{"mid warn", 85.0, "warn"},
+		{"at 80.0 boundary", 80.0, "warn"},
+		{"just under 80.0", 79.99, "bad"},
 		{"zero", 0.0, "bad"},
 	}
 	for _, tc := range cases {
@@ -486,11 +488,11 @@ func TestBuildPage_SectionUptimeColorClass(t *testing.T) {
 	}`
 	h, _ := newHandlerForTestWithTemplate(t, cfgJSON, richerTemplate, func(keys []string) map[string]gatus.Status {
 		healthy := true
-		// A is 100% (good), B is 97.5% (warn). Section pill shows the max
-		// (current behaviour), so expect the good class.
+		// A is 100% (good), B is 92% (transition tier). Section pill
+		// shows the max — 100% — so it expects --good.
 		return map[string]gatus.Status{
 			"uptime-cloud|home_a": {Healthy: &healthy, Uptime: ptrF(100.0)},
-			"uptime-cloud|home_b": {Healthy: &healthy, Uptime: ptrF(97.5)},
+			"uptime-cloud|home_b": {Healthy: &healthy, Uptime: ptrF(92.0)},
 		}
 	})
 	w := httptest.NewRecorder()
@@ -499,12 +501,11 @@ func TestBuildPage_SectionUptimeColorClass(t *testing.T) {
 	if !strings.Contains(body, `class="pill pill--good"`) {
 		t.Errorf("expected section pill--good (max 100%%); body:\n%s", body)
 	}
-	// Both service cards render color-coded uptimes.
 	if !strings.Contains(body, `class="service-uptime service-uptime--good"`) {
 		t.Errorf("expected service-uptime--good on A; body:\n%s", body)
 	}
-	if !strings.Contains(body, `class="service-uptime service-uptime--warn"`) {
-		t.Errorf("expected service-uptime--warn on B (97.5%%); body:\n%s", body)
+	if !strings.Contains(body, `class="service-uptime service-uptime--transition"`) {
+		t.Errorf("expected service-uptime--transition on B (92%%); body:\n%s", body)
 	}
 }
 

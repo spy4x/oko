@@ -249,10 +249,17 @@ func serviceViewFrom(s config.Service, domain string, st gatus.Status) ServiceVi
 
 // uptimeClass maps a 0..100 uptime percentage to a CSS modifier.
 //
-// Thresholds follow common SLA tiers: ≥99.9% "four nines" is the high
-// bar, ≥99.0% "three nines" is the everyday floor, ≥95.0% is degraded
-// but still serving, below is effectively broken. The class names are
-// the suffixes used in the template's `<span class="pill--X">` and
+// Four tiers, picked from operator feedback on the dashboard:
+//
+//	≥95%   good        solid green
+//	90-95% transition  yellow→green CSS gradient (mixed zone)
+//	80-90% warn        solid amber/yellow
+//	<80%   bad         solid red
+//
+// The 90-95% band renders as an actual gradient (yellow on the left,
+// green on the right) instead of a single colour — that's what "mix of
+// yellow and green" means in the visual spec. The class names are the
+// suffixes used in the template's `<span class="pill--X">` and
 // `<a class="service-uptime--X">` so they stay in sync with CSS.
 //
 // nil → "" — caller decides how to render the absence (we just don't
@@ -262,13 +269,11 @@ func uptimeClass(pct *float64) string {
 		return ""
 	}
 	switch {
-	case *pct >= 99.9:
-		return "good"
-	case *pct >= 99.0:
-		return "fair" // ≥99% but below four-nines — "fair" avoids the
-		// "amber = warning" reading that an `ok` label would trigger
-		// while the colour is amber.
 	case *pct >= 95.0:
+		return "good"
+	case *pct >= 90.0:
+		return "transition"
+	case *pct >= 80.0:
 		return "warn"
 	default:
 		return "bad"

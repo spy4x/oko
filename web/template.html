@@ -29,15 +29,13 @@
         --accent-soft: rgba(94, 158, 255, 0.12);
         --healthy: #4ade80;
         --down: #ef4444;
-        --uptime-fair: #fbbf24;    /* amber  - 99.0..99.9 ("fair" not "ok" — amber reads as warning, so the label stays neutral) */
-        --uptime-warn: #fb923c;    /* orange - 95.0..99.0 */
+        --uptime-warn: #fbbf24;    /* amber/yellow - 80-90% */
+        --uptime-mixed: #84cc16;   /* lime (yellow-green) - section-pill representative of the 90-95% gradient tier */
         --uptime-good-bg: rgba(74, 222, 128, 0.10);
-        --uptime-fair-bg: rgba(251, 191, 36, 0.10);
-        --uptime-warn-bg: rgba(251, 146, 60, 0.10);
+        --uptime-warn-bg: rgba(251, 191, 36, 0.10);
         --uptime-bad-bg: rgba(239, 68, 68, 0.10);
         --uptime-good-bd: rgba(74, 222, 128, 0.40);
-        --uptime-fair-bd: rgba(251, 191, 36, 0.40);
-        --uptime-warn-bd: rgba(251, 146, 60, 0.40);
+        --uptime-warn-bd: rgba(251, 191, 36, 0.40);
         --uptime-bad-bd: rgba(239, 68, 68, 0.40);
         --radius-card: 14px;
         --radius-pill: 999px;
@@ -229,13 +227,14 @@
         font-style: italic;
       }
 
-      /* Uptime color-coding. Class suffix picked by Go from uptimeClass():
-         good = ≥99.9% (green), fair = ≥99.0% (amber), warn = ≥95.0% (orange),
-         bad = <95% (red). The empty modifier stays the default muted grey. */
-      .pill--good { color: var(--healthy); }
-      .pill--fair { color: var(--uptime-fair); }
-      .pill--warn { color: var(--uptime-warn); }
-      .pill--bad  { color: var(--down); }
+      /* Uptime color-coding for the section pill (text-only, no bg).
+         The 90-95% band — class "transition" on the per-service pill —
+         uses a CSS gradient there; section pills collapse it to a single
+         lime colour for readability. */
+      .pill--good       { color: var(--healthy); }
+      .pill--transition { color: var(--uptime-mixed); }
+      .pill--warn       { color: var(--uptime-warn); }
+      .pill--bad        { color: var(--down); }
 
       .grid {
         display: grid;
@@ -335,17 +334,27 @@
 
       /* Per-service uptime color-coding. The link doubles as the
          color-coded uptime pill AND the entry point to the per-service
-         gatus detail page. Modifier classes (--good/--fair/--warn/--bad)
-         come from uptimeClass() in handler.go. */
+         gatus detail page. Modifier classes (--good/--transition/
+         --warn/--bad) come from uptimeClass() in handler.go. The
+         transition tier (90-95%) is a CSS gradient instead of a solid
+         fill — that's what "mix of yellow and green" means in the
+         visual spec. */
       .service-uptime--good {
         color: var(--healthy);
         border-color: var(--uptime-good-bd);
         background: var(--uptime-good-bg);
       }
-      .service-uptime--fair {
-        color: var(--uptime-fair);
-        border-color: var(--uptime-fair-bd);
-        background: var(--uptime-fair-bg);
+      .service-uptime--transition {
+        /* Dark text on the bright gradient — readable on both the yellow
+           and green halves. Border is a midpoint lime so it doesn't
+           clash with either end of the gradient. */
+        color: var(--bg-page);
+        border-color: rgba(132, 204, 22, 0.55);
+        background: linear-gradient(
+          to right,
+          var(--uptime-warn) 0%,
+          var(--healthy) 100%
+        );
       }
       .service-uptime--warn {
         color: var(--uptime-warn);

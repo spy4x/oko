@@ -40,17 +40,19 @@ steps:
       - go build ./...
 
   publish:
-    # docker:dind bundles its own dockerd + buildx. Needs `privileged: true`
-    # on the step to start the nested daemon (mount cgroups, etc). Unlike
-    # the buildx plugin, no server-level WOODPECKER_PLUGINS_PRIVILEGED
-    # allow-list is required for a step-level privilege request.
-    image: docker:dind
-    privileged: true
+    # Mount the agent's docker socket so the step's docker CLI talks to
+    # the host daemon directly. Avoids running a nested daemon (no
+    # `privileged` needed, no WOODPECKER_PLUGINS_PRIVILEGED / repo-trust
+    # requirement). Trade-off: in-container root == host root for the
+    # duration of the step — acceptable in this CI setup since the
+    # agent already runs as root.
+    #
+    # `docker:29` ships the CLI + buildx; the daemon comes from the
+    # mounted socket.
+    image: docker:29
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     commands:
-      # `docker:dind` auto-starts dockerd in the entrypoint. Wait until
-      # the socket is live before running any docker commands — otherwise
-      # `docker login` races the daemon startup and exits 1.
-      - until docker info >/dev/null 2>&1; do sleep 1; done
       # `echo "$TOKEN" | docker login …` — TOKEN never lands on the
       # command line (no shell history leak, no log exposure).
       - echo "$GHCR_PUSH_TOKEN" | docker login ghcr.io -u spy4x --password-stdin
@@ -73,8 +75,9 @@ steps:
           --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           $TAGS \
           .
-    secrets:
-      - GHCR_PUSH_TOKEN
+    environment:
+      GHCR_PUSH_TOKEN:
+        from_secret: GHCR_PUSH_TOKEN
     when:
       event: [push, tag]
       branch: main

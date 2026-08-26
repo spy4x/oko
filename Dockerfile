@@ -23,6 +23,10 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/oko /usr/local/bin/oko
 COPY --from=build /src/web /app/web
+# Bundle a sample config so the image runs out of the box for inspection.
+# Operators MUST mount their own config.json over this — the bundled copy
+# is a demo with fake services and is not meant for production.
+COPY --from=build /src/config.example.json /app/config.json
 
 WORKDIR /app
 

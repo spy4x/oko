@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0a0a0a">
-    <meta name="description" content="Anton Shubin's servers">
+    <meta name="description" content="{{ .Title }}">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='80' font-size='80'%3E👁%3C/text%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -392,14 +392,14 @@
         }
       }
     </style>
-    <title>Anton Shubin's servers</title>
+    <title>{{ .Title }}</title>
   </head>
 
   <body>
     <div class="page">
       <header class="header">
-        <h1>Anton Shubin's servers</h1>
-        <p class="header-sub">Single page for every self-hosted service — search, jump, check status</p>
+        <h1>{{ .Title }}</h1>
+        <p class="header-sub">{{ .Subtitle }}</p>
       </header>
 
       <div class="search-wrap">

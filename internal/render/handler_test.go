@@ -17,13 +17,13 @@ import (
 	"github.com/spy4x/oko/internal/gatus"
 )
 
-// minimalTemplate is the test template. It exercises every template
-// directive we use in production: range, if/else, struct field access,
-// function calls, URL substitution.
+// minimalTemplate exercises every template directive used in production.
 const minimalTemplate = `<!DOCTYPE html>
 <html>
-<head><title>{{ .Domain }}</title></head>
+<head><title>{{ .Title }}</title></head>
 <body>
+<h1>{{ .Title }}</h1>
+<p class="sub">{{ .Subtitle }}</p>
 {{ range .Sections }}
 <section data-section="{{ .Name }}">
   <h2>{{ .Name }}</h2>
@@ -40,7 +40,7 @@ const minimalTemplate = `<!DOCTYPE html>
   </ul>
 </section>
 {{ end }}
-<footer>Generated {{ .GeneratedAt }} · {{ .Domain }}</footer>
+<footer>{{ .Title }} · {{ .Domain }}</footer>
 </body>
 </html>`
 
@@ -54,42 +54,72 @@ func writeTemplate(t *testing.T, body string) string {
 	return p
 }
 
-func newHandlerForTest(t *testing.T, status map[string]gatus.Status) (http.Handler, *cache.Cache) {
+// writeConfig writes a catalog file and returns its path + a *config.Config
+// pointing at it.
+func writeConfig(t *testing.T, configJSON string) (*config.Config, string) {
 	t.Helper()
-	path := writeTemplate(t, minimalTemplate)
-	cfg := config.Config{Domain: "example.com", TemplatePath: path}
-
-	c := cache.New(time.Hour, func(_ context.Context, _ []string) (map[string]gatus.Status, error) {
-		// Return a copy each call so tests can mutate.
-		out := make(map[string]gatus.Status, len(status))
-		for k, v := range status {
-			out[k] = v
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	if configJSON != "" {
+		if err := os.WriteFile(p, []byte(configJSON), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		return out, nil
+	}
+	// Construct Config directly with the test file path; we don't need
+	// env-driven fields like UptimeHosts for handler tests since the
+	// gatus client is only constructed in main.go (not exercised here).
+	cfg := &config.Config{
+		Port:        "8080",
+		Domain:      "example.com",
+		CacheTTL:    time.Hour,
+		UptimeHosts: []string{"uptime-cloud.example.com"},
+	}
+	cfg.SetConfigPath(p)
+	cfg.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return cfg, p
+}
+
+// newHandlerForTest builds a handler. statusFn returns the gatus map for
+// the requested keys.
+func newHandlerForTest(t *testing.T, configJSON string, statusFn func(keys []string) map[string]gatus.Status) (http.Handler, *config.Config) {
+	t.Helper()
+	templatePath := writeTemplate(t, minimalTemplate)
+	cfg, _ := writeConfig(t, configJSON)
+
+	c := cache.New(time.Hour, func(_ context.Context, keys []string) (map[string]gatus.Status, error) {
+		if statusFn == nil {
+			return map[string]gatus.Status{}, nil
+		}
+		return statusFn(keys), nil
 	})
 	t.Cleanup(c.Stop)
 
-	h, err := NewHandler(c, cfg, slogDiscard())
+	h, err := NewHandler(c, cfg, templatePath, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	return h, c
-}
-
-// slogDiscard returns a slog.Logger that writes to io.Discard. Keeps
-// test output clean without coupling to the handler's logger shape.
-func slogDiscard() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return h, cfg
 }
 
 func TestBuildPage_HealthyAndDown(t *testing.T) {
-	healthy := true
-	down := false
-	status := map[string]gatus.Status{
-		"uptime-cloud|home_audiobookshelf": {Healthy: &healthy, Uptime: ptrF(99.9)},
-		"uptime-cloud|home_authelia":       {Healthy: &down, Uptime: ptrF(50.0)},
-	}
-	h, _ := newHandlerForTest(t, status)
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "Audiobooks", "url": "https://books.${DOMAIN}",
+	        "endpoint": "home_audiobookshelf", "gatus_host": "uptime-cloud" },
+	      { "name": "Auth",      "url": "https://auth.${DOMAIN}",
+	        "endpoint": "home_authelia",       "gatus_host": "uptime-cloud" }
+	    ]}
+	  ]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		down := false
+		return map[string]gatus.Status{
+			"uptime-cloud|home_audiobookshelf": {Healthy: &healthy, Uptime: ptrF(99.9)},
+			"uptime-cloud|home_authelia":       {Healthy: &down, Uptime: ptrF(50.0)},
+		}
+	})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != 200 {
@@ -108,22 +138,36 @@ func TestBuildPage_HealthyAndDown(t *testing.T) {
 }
 
 func TestBuildPage_UnknownIsHealthy(t *testing.T) {
-	// Status map missing the key → unknown → healthy, no uptime pill.
-	h, _ := newHandlerForTest(t, map[string]gatus.Status{})
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "Audiobooks", "url": "https://books.${DOMAIN}",
+	        "endpoint": "home_audiobookshelf", "gatus_host": "uptime-cloud" }
+	    ]}
+	  ]
+	}`
+	// Status map has no entry for the key → unknown → healthy, no red border.
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	body := w.Body.String()
 	if !strings.Contains(body, `data-endpoint="uptime-cloud|home_audiobookshelf"`) {
 		t.Errorf("expected first service in output; body=%s", body)
 	}
-	// Healthy by default, no --down class.
 	if strings.Contains(body, "service--down") {
 		t.Error("unknown service should not be flagged down")
 	}
 }
 
 func TestBuildPage_DomainSubstitution(t *testing.T) {
-	h, _ := newHandlerForTest(t, map[string]gatus.Status{})
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "Audiobooks", "url": "https://books.${DOMAIN}" }
+	    ]}
+	  ]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	body := w.Body.String()
@@ -135,53 +179,158 @@ func TestBuildPage_DomainSubstitution(t *testing.T) {
 	}
 }
 
-func TestBuildPage_SectionCounterAndUptime(t *testing.T) {
-	healthy := true
-	down := false
-	// Take 3 actual home services and mark 1 down with no uptime.
-	status := map[string]gatus.Status{
-		"uptime-cloud|home_audiobookshelf": {Healthy: &healthy, Uptime: ptrF(99.0)},
-		"uptime-cloud|home_authelia":       {Healthy: &healthy, Uptime: ptrF(95.0)},
-		"uptime-cloud|home_woodpecker-ci":  {Healthy: &down},
-	}
-	h, _ := newHandlerForTest(t, status)
+func TestBuildPage_TitleFromConfig(t *testing.T) {
+	cfgJSON := `{
+	  "title": "My Homelab",
+	  "subtitle": "All my stuff",
+	  "servers": [{ "name": "Home", "services": [{ "name": "A", "url": "u" }] }]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 	body := w.Body.String()
-	// 3 home services with explicit status, others unknown → 2 healthy of 3 in promise.
-	// The full home section has 23 services; with 1 known-down, 22 known-healthy-or-unknown.
-	// "22/23 healthy" + max uptime 99.00%
-	if !strings.Contains(body, "99.00% · 30d") {
-		t.Errorf("expected max uptime pill, got body=%s", body)
+	if !strings.Contains(body, "<title>My Homelab</title>") {
+		t.Errorf("expected custom title in <title>; got %s", body)
 	}
-	if !strings.Contains(body, "service--down") {
-		t.Errorf("expected at least one down service, got body=%s", body)
+	if !strings.Contains(body, "<h1>My Homelab</h1>") {
+		t.Errorf("expected custom title in header; got %s", body)
+	}
+	if !strings.Contains(body, "All my stuff") {
+		t.Errorf("expected subtitle; got %s", body)
 	}
 }
 
-func TestBuildPage_RefreshBypass(t *testing.T) {
-	healthy := true
-	status := map[string]gatus.Status{
-		"uptime-cloud|home_a": {Healthy: &healthy, Uptime: ptrF(99.0)},
+func TestBuildPage_DefaultTitleWhenMissing(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [{ "name": "A", "url": "u" }] }]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "Service dashboard") {
+		t.Errorf("expected default title; got %s", body)
 	}
-	h, c := newHandlerForTest(t, status)
+}
 
-	// Pre-warm via plain GET — adds the keys to the underlying cache
-	// so refresh has something to look up.
-	if _, err := c.Get(context.Background(), nil); err != nil {
+func TestBuildPage_SectionCounterAndUptime(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "A", "url": "u1", "endpoint": "home_a", "gatus_host": "uptime-cloud" },
+	      { "name": "B", "url": "u2", "endpoint": "home_b", "gatus_host": "uptime-cloud" },
+	      { "name": "C", "url": "u3", "endpoint": "home_c", "gatus_host": "uptime-cloud" }
+	    ]}
+	  ]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		down := false
+		return map[string]gatus.Status{
+			"uptime-cloud|home_a": {Healthy: &healthy, Uptime: ptrF(99.0)},
+			"uptime-cloud|home_b": {Healthy: &healthy, Uptime: ptrF(95.0)},
+			"uptime-cloud|home_c": {Healthy: &down},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "2/3 healthy") {
+		t.Errorf("expected counter '2/3 healthy', got body=%s", body)
+	}
+	if !strings.Contains(body, "99.00% · 30d") {
+		t.Errorf("expected max uptime pill, got body=%s", body)
+	}
+}
+
+func TestBuildPage_HiddenServiceSkipped(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "Visible", "url": "u1" },
+	      { "name": "Hidden",  "url": "u2", "hidden": true }
+	    ]}
+	  ]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "Visible") {
+		t.Error("expected Visible in output")
+	}
+	if strings.Contains(body, "Hidden") {
+		t.Error("expected Hidden to be filtered out")
+	}
+	if !strings.Contains(body, "1/1 healthy") {
+		t.Errorf("expected '1/1 healthy' counter, got %s", body)
+	}
+}
+
+func TestBuildPage_NoGatusServiceAlwaysHealthy(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Home", "services": [
+	      { "name": "Plain", "url": "https://example.com" }
+	    ]}
+	  ]
+	}`
+	// No endpoint → no lookup, renders as healthy.
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if strings.Contains(body, "service--down") {
+		t.Errorf("service without gatus should not be down; got %s", body)
+	}
+}
+
+func TestBuildPage_EmptyServerSkipped(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Empty", "services": [] },
+	    { "name": "Home",  "services": [{ "name": "A", "url": "u" }] }
+	  ]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if strings.Contains(body, "<h2>Empty</h2>") {
+		t.Errorf("empty server should be skipped; got %s", body)
+	}
+	if !strings.Contains(body, "<h2>Home</h2>") {
+		t.Errorf("Home server should be present; got %s", body)
+	}
+}
+
+func TestBuildPage_BadConfigReturns500(t *testing.T) {
+	h, _ := newHandlerForTest(t, `{"not-a-server": "x"}`, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	// config has no servers → all sections skipped → empty render is
+	// fine. To force a 500 we'd need a truly malformed JSON. Test that
+	// separately below.
+	if w.Code != 200 {
+		t.Errorf("expected 200 for empty catalog (just no services), got %d", w.Code)
+	}
+}
+
+func TestBuildPage_MalformedConfigReturns500(t *testing.T) {
+	h, cfg := newHandlerForTest(t, "", nil)
+	// Corrupt the file on disk after handler init.
+	if err := os.WriteFile(cfg.ConfigPath, []byte("{not valid json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	// Now fetch with refresh — should still work.
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/?refresh=1", nil))
-	if w.Code != 200 {
-		t.Errorf("status=%d", w.Code)
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 500 {
+		t.Errorf("expected 500 on malformed JSON, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
 func TestBuildPage_HealthzEndpoint(t *testing.T) {
-	h, _ := newHandlerForTest(t, nil)
+	h, _ := newHandlerForTest(t, "", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/healthz", nil))
 	if w.Code != 200 {
@@ -193,31 +342,28 @@ func TestBuildPage_HealthzEndpoint(t *testing.T) {
 }
 
 func TestBuildPage_OnlyExactRootMatches(t *testing.T) {
-	h, _ := newHandlerForTest(t, nil)
+	h, _ := newHandlerForTest(t, "", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/something", nil))
-	// /something should NOT hit the root handler; "/" exact-match Go 1.22+.
+	// /something should NOT hit the root handler.
 	if w.Code == 200 && strings.Contains(w.Header().Get("Content-Type"), "html") {
 		t.Errorf("/something should not render the dashboard; got status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
-func TestBuildPage_EmptySectionOmitted(t *testing.T) {
-	// Build a service list with no portable services and check the
-	// Portable header is not rendered.
-	h, _ := newHandlerForTest(t, nil)
+func TestBuildPage_RefreshBypass(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [{ "name": "A", "url": "u",
+	    "endpoint": "home_a", "gatus_host": "uptime-cloud" }] }]
+	}`
+	h, _ := newHandlerForTest(t, cfgJSON, func(_ []string) map[string]gatus.Status {
+		healthy := true
+		return map[string]gatus.Status{"uptime-cloud|home_a": {Healthy: &healthy}}
+	})
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
-	body := w.Body.String()
-	// "Portable" appears as a section title only if at least one service
-	// is in the section. With the real ServiceList, portable has 2, so
-	// it's kept. The check is structural: every section title in the
-	// output should have at least one service card under it.
-	for _, sec := range []string{"Home", "Cloud", "Offsite", "Portable"} {
-		// crude: count "<section" tags before/after
-		if !strings.Contains(body, "<h2>"+sec+"</h2>") {
-			t.Errorf("section %q missing", sec)
-		}
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/?refresh=1", nil))
+	if w.Code != 200 {
+		t.Errorf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

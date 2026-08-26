@@ -1,8 +1,9 @@
 // Command oko is a server-rendered dashboard for self-hosted services.
 //
-// Each HTTP request fetches gatus badge SVGs in parallel (behind a 60s
-// in-memory cache), parses the health/uptime signals, and renders the
-// full HTML page server-side.
+// Each HTTP request reads a JSON catalog (mtime-cached, no restart
+// needed to pick up edits) and, for services with gatus configured,
+// fans out gatus badge SVGs in parallel (behind a 60s in-memory cache).
+// The full HTML page is rendered server-side.
 //
 // Two operating modes:
 //
@@ -66,12 +67,24 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	cfg.WithLogger(logger)
+
+	// Validate the catalog eagerly at startup so a bad config file
+	// surfaces in logs instead of waiting for the first GET.
+	if fc, ferr := cfg.File(); ferr != nil {
+		logger.Warn("initial config load failed (will retry on first request)", slog.Any("err", ferr))
+		_ = fc
+	}
 
 	gc := gatus.NewClient(cfg.UptimeHosts, cfg.UptimeTimeout)
 	statusCache := cache.New(cfg.CacheTTL, gc.FetchAll)
 	defer statusCache.Stop()
 
-	handler, err := render.NewHandler(statusCache, cfg, logger)
+	templatePath := os.Getenv("TEMPLATE_PATH")
+	if templatePath == "" {
+		templatePath = "/app/web/template.html"
+	}
+	handler, err := render.NewHandler(statusCache, &cfg, templatePath, logger)
 	if err != nil {
 		return fmt.Errorf("init handler: %w", err)
 	}
@@ -97,7 +110,8 @@ func run(logger *slog.Logger) error {
 			slog.String("domain", cfg.Domain),
 			slog.Any("uptime_hosts", cfg.UptimeHosts),
 			slog.Duration("cache_ttl", cfg.CacheTTL),
-			slog.Int("services", len(config.ServiceList)),
+			slog.String("config", cfg.ConfigPath),
+			slog.String("template", templatePath),
 		)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

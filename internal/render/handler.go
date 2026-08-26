@@ -1,14 +1,16 @@
 // Package render wires the HTTP handler to the html/template.
 //
 // The handler is responsible for:
-//  1. Fetching the current status snapshot from the cache.
-//  2. Building a PageData value (sections, per-section counter + uptime
+//  1. Reading the current catalog (file-config, mtime-cached).
+//  2. Fetching the current gatus status snapshot (cache-backed).
+//  3. Building a PageData value (sections, per-section counter + uptime
 //     pills, per-service health/uptime).
-//  3. Executing the template.
+//  4. Executing the template.
 //
 // All templated user input is escaped by html/template. The template
-// file itself is trusted (ships in the image); only the runtime data is
-// user-supplied (and that's all static catalog text, not request input).
+// file itself is trusted (ships in the image); only the catalog data is
+// user-supplied, and it's loaded from a file the operator controls — not
+// from request input.
 package render
 
 import (
@@ -27,14 +29,22 @@ import (
 	"github.com/spy4x/oko/internal/gatus"
 )
 
+// Defaults applied to PageData when the catalog has no explicit values.
+const (
+	DefaultTitle    = "Service dashboard"
+	DefaultSubtitle = "Single page for every self-hosted service — search, jump, check status"
+)
+
 // PageData is what the template receives.
 type PageData struct {
+	Title       string
+	Subtitle    string
 	Domain      string
 	GeneratedAt string
 	Sections    []SectionView
 }
 
-// SectionView is one rendered group on the page (Home, Cloud, etc.).
+// SectionView is one rendered group on the page (Home, Cloud, ...).
 type SectionView struct {
 	Name     string
 	Counter  string // "23/24 healthy"
@@ -43,11 +53,9 @@ type SectionView struct {
 	Services []ServiceView
 }
 
-// ServiceView is one card.
-//
-// Healthy is the user-facing state: unknown is treated as true (no red
-// border). Down is the strict state: only true when gatus explicitly
-// reports false.
+// ServiceView is one card. Healthy is the user-facing state: unknown is
+// treated as true (no red border). Down is the strict state: only true
+// when gatus explicitly reports false.
 type ServiceView struct {
 	Name        string
 	Product     string
@@ -57,46 +65,46 @@ type ServiceView struct {
 	Description string
 	Healthy     bool
 	Down        bool
-	Uptime      string // e.g. "99.95%" — empty when unknown
+	Uptime      string
 	DetailURL   string
-	Endpoint    string // for data-endpoint="" attr (used by external JS / scrapers)
+	Endpoint    string
 }
 
 // NewHandler returns an http.Handler that renders the dashboard.
 //
+// cfg.TemplatePath is the template file (separate from cfg.ConfigPath,
+// which is the catalog). Both default to /app/web/template.html and
+// /app/config.json respectively.
+//
 // The template is parsed lazily on first request so a missing/broken
 // template fails the first GET instead of process startup — easier to
 // diagnose via the live URL.
-func NewHandler(c *cache.Cache, cfg config.Config, logger *slog.Logger) (http.Handler, error) {
-	// ParseFiles registers the file's content under its base name. We
-	// re-derive the base name and use ExecuteTemplate to dispatch by
-	// name — otherwise a single-file template with no {{define}} block
-	// would not be executable via Execute (it'd come back as
-	// "incomplete or empty template").
-	parsed, err := template.New(filepath.Base(cfg.TemplatePath)).Funcs(funcMap()).ParseFiles(cfg.TemplatePath)
+func NewHandler(c *cache.Cache, cfg *config.Config, templatePath string, logger *slog.Logger) (http.Handler, error) {
+	if templatePath == "" {
+		return nil, fmt.Errorf("template path is empty")
+	}
+	parsed, err := template.New(filepath.Base(templatePath)).Funcs(funcMap()).ParseFiles(templatePath)
 	if err != nil {
-		return nil, fmt.Errorf("parse template %q: %w", cfg.TemplatePath, err)
+		return nil, fmt.Errorf("parse template %q: %w", templatePath, err)
 	}
 	tmplName := parsed.Name()
-	_ = tmplName
-
-	// Precompute the namespaced keys once.
-	keys := make([]string, 0, len(config.ServiceList))
-	for _, s := range config.ServiceList {
-		keys = append(keys, config.EndpointKey(s))
-	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		// ?refresh=1 bypasses the cache. Without it, the cache layer may
-		// serve a snapshot up to CACHE_TTL_SECS old.
-		status, err := fetchStatuses(r.Context(), c, keys, r.URL.Query().Get("refresh") == "1")
+		file, err := cfg.File()
+		if err != nil {
+			logger.Error("config load failed", slog.Any("err", err))
+			http.Error(w, "config load error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		status, err := fetchStatuses(r.Context(), c, file.EndpointKeys(), r.URL.Query().Get("refresh") == "1")
 		if err != nil {
 			logger.Warn("gatus fetch failed; rendering with empty status", slog.Any("err", err))
 			status = map[string]gatus.Status{}
 		}
 
-		data := buildPage(cfg.Domain, status)
+		data := buildPage(cfg.Domain, file, status)
 
 		var buf bytes.Buffer
 		if err := parsed.ExecuteTemplate(&buf, tmplName, data); err != nil {
@@ -127,30 +135,42 @@ func fetchStatuses(ctx context.Context, c *cache.Cache, keys []string, force boo
 	return c.Get(ctx, keys)
 }
 
-// buildPage assembles PageData from the service catalog and the status map.
+// buildPage assembles PageData from the catalog and the status map.
 //
-// Section order follows config.SectionOrder; sections with zero visible
-// services are dropped entirely (no empty group on the page).
+// Sections are rendered in the order they appear in the catalog (which
+// matches the JSON array order — operators control it directly).
 //
 // Per-section Counter shows "healthy/total". Per-section Uptime shows
 // the max 30-day uptime across that section's services with known
 // numbers — useful signal: "all services here are at least 99.5%".
-func buildPage(domain string, status map[string]gatus.Status) PageData {
-	sections := make([]SectionView, 0, len(config.SectionOrder))
+func buildPage(domain string, file config.FileConfig, status map[string]gatus.Status) PageData {
+	title := file.Title
+	if title == "" {
+		title = DefaultTitle
+	}
+	subtitle := file.Subtitle
+	if subtitle == "" {
+		subtitle = DefaultSubtitle
+	}
+
+	sections := make([]SectionView, 0, len(file.Servers))
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	for _, sectionName := range config.SectionOrder {
+	for _, server := range file.Servers {
 		var sec SectionView
 		healthy := 0
 		var maxUptime float64
 		haveUptime := false
 
-		for _, s := range config.ServiceList {
-			if s.Section != sectionName || s.Hidden {
+		for _, svc := range server.Services {
+			if svc.Hidden {
 				continue
 			}
-			st := status[config.EndpointKey(s)]
-			sv := serviceViewFrom(s, domain, st)
+			var st gatus.Status
+			if k := svc.Key(); k != "" {
+				st = status[k]
+			}
+			sv := serviceViewFrom(svc, domain, st)
 			sec.Services = append(sec.Services, sv)
 
 			if sv.Healthy {
@@ -169,7 +189,7 @@ func buildPage(domain string, status map[string]gatus.Status) PageData {
 		}
 
 		total := len(sec.Services)
-		sec.Name = config.SectionTitle(sectionName)
+		sec.Name = server.Name
 		sec.Counter = fmt.Sprintf("%d/%d healthy", healthy, total)
 		if haveUptime {
 			sec.Uptime = fmt.Sprintf("%.2f%% · 30d", maxUptime)
@@ -181,6 +201,8 @@ func buildPage(domain string, status map[string]gatus.Status) PageData {
 	}
 
 	return PageData{
+		Title:       title,
+		Subtitle:    subtitle,
 		Domain:      domain,
 		GeneratedAt: now,
 		Sections:    sections,
@@ -188,18 +210,22 @@ func buildPage(domain string, status map[string]gatus.Status) PageData {
 }
 
 func serviceViewFrom(s config.Service, domain string, st gatus.Status) ServiceView {
+	url := s.URL
+	if strings.Contains(url, "${DOMAIN}") {
+		url = strings.ReplaceAll(url, "${DOMAIN}", domain)
+	}
 	sv := ServiceView{
 		Name:        s.Name,
 		Product:     s.Product,
 		ProductURL:  s.ProductURL,
-		URL:         strings.ReplaceAll(s.URL, "${DOMAIN}", domain),
+		URL:         url,
 		Icon:        s.Icon,
 		Description: s.Description,
 		Healthy:     true, // unknown treated as healthy (no red border)
 		Down:        false,
 		Uptime:      "",
 		DetailURL:   st.DetailURL,
-		Endpoint:    config.EndpointKey(s),
+		Endpoint:    s.Key(),
 	}
 	if st.Healthy != nil {
 		sv.Down = !*st.Healthy

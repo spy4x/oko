@@ -1,0 +1,46 @@
+{
+  "title": "Service dashboard",
+  "subtitle": "Single page for every self-hosted service — search, jump, check status",
+  "servers": [
+    {
+      "name": "Home",
+      "services": [
+        {
+          "name": "Audiobooks",
+          "url": "https://books.${DOMAIN}",
+          "icon": "📚",
+          "description": "Audiobook and podcast library with streaming",
+          "product": "Audiobookshelf",
+          "product_url": "https://www.audiobookshelf.org/",
+          "endpoint": "home_audiobookshelf",
+          "gatus_host": "uptime-cloud"
+        },
+        {
+          "name": "Gitea",
+          "url": "https://git.${DOMAIN}",
+          "icon": "📦",
+          "description": "Self-hosted Git service",
+          "product": "Gitea",
+          "product_url": "https://about.gitea.com/",
+          "endpoint": "home_gitea",
+          "gatus_host": "uptime-cloud"
+        }
+      ]
+    },
+    {
+      "name": "Cloud",
+      "services": [
+        {
+          "name": "Vaultwarden",
+          "url": "https://passwords.${DOMAIN}",
+          "icon": "🔑",
+          "description": "Bitwarden-compatible password manager",
+          "product": "Vaultwarden",
+          "product_url": "https://github.com/dani-garcia/vaultwarden",
+          "endpoint": "cloud_vaultwarden",
+          "gatus_host": "uptime-home"
+        }
+      ]
+    }
+  ]
+}

@@ -1,489 +1,118 @@
-// Package config loads environment variables and exposes the canonical
-// ServiceList — every card rendered on the dashboard.
+// Package config loads runtime config (env vars + a JSON file).
+//
+// Runtime settings come from env vars. The service catalog — servers,
+// their services, gatus lookup keys — comes from a JSON file. The file
+// is re-read on each request with mtime caching, so editing the file
+// is enough; no container restart needed.
+//
+// Schema (JSON, see config.example.json):
+//
+//	{
+//	  "title":    "...",
+//	  "subtitle": "...",
+//	  "servers": [
+//	    {
+//	      "name": "Home",
+//	      "services": [
+//	        {
+//	          "name":        "Audiobooks",
+//	          "url":         "https://books.${DOMAIN}",
+//	          "icon":        "📚",
+//	          "description": "Audiobook and podcast library with streaming",
+//	          "product":     "Audiobookshelf",
+//	          "product_url": "https://www.audiobookshelf.org/",
+//	          "endpoint":    "home_audiobookshelf",
+//	          "gatus_host":  "uptime-cloud",
+//	          "hidden":      false
+//	        }
+//	      ]
+//	    }
+//	  ]
+//	}
+//
+// Required: server.name, service.name, service.url.
+// Optional: everything else. A service with no `endpoint`+`gatus_host`
+// always renders as healthy (no gatus lookup).
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
-// Service is one card on the dashboard.
+// FileConfig is the JSON schema the catalog file uses.
+type FileConfig struct {
+	Title    string   `json:"title,omitempty"`
+	Subtitle string   `json:"subtitle,omitempty"`
+	Servers  []Server `json:"servers"`
+}
+
+// Server is one UI group on the page (Home, Cloud, ...). The array order
+// is the render order.
+type Server struct {
+	Name     string    `json:"name"`
+	Services []Service `json:"services"`
+}
+
+// Service is one card on the page.
 //
-// URL is a template string with the literal "${DOMAIN}" placeholder,
-// substituted at render time. Same convention as the previous static
-// nginx dash so existing links translate unchanged.
+// URL is rendered as-is; if it contains "${DOMAIN}", that token is
+// replaced with cfg.Domain at render time. Other env-var interpolation
+// is NOT supported — keep the URL literal.
+//
+// Endpoint is the gatus endpoint key. GatusHost is the short name of
+// the gatus instance that exposes that key (must match a host in
+// Config.UptimeHosts). If either is empty, no gatus lookup happens
+// for this service — it always renders as healthy.
 type Service struct {
-	Name        string // user-facing label, e.g. "AI Chat"
-	Product     string // product name shown in footer link, e.g. "Open WebUI"
-	ProductURL  string // product homepage
-	Endpoint    string // gatus endpoint key
-	GatusHost   string // "uptime-cloud" or "uptime-home" — namespaced at fetch time
-	URL         string // service URL, ${DOMAIN} substituted
-	Section     string // "home" | "cloud" | "offsite" | "portable"
-	Icon        string // emoji
-	Description string
-	Hidden      bool // skip render but keep gatus fetch on (phasing out)
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Icon        string `json:"icon,omitempty"`
+	Description string `json:"description,omitempty"`
+	Product     string `json:"product,omitempty"`
+	ProductURL  string `json:"product_url,omitempty"`
+	Endpoint    string `json:"endpoint,omitempty"`
+	GatusHost   string `json:"gatus_host,omitempty"`
+	Hidden      bool   `json:"hidden,omitempty"`
 }
 
-// SectionOrder is the rendered order. Sections not present in any service
-// are skipped automatically.
-var SectionOrder = []string{"home", "cloud", "offsite", "portable"}
+// HasGatus reports whether this service participates in gatus lookups.
+func (s Service) HasGatus() bool { return s.Endpoint != "" && s.GatusHost != "" }
 
-// SectionTitle is the human-readable label shown in the UI.
-func SectionTitle(s string) string {
-	switch s {
-	case "home":
-		return "Home"
-	case "cloud":
-		return "Cloud"
-	case "offsite":
-		return "Offsite"
-	case "portable":
-		return "Portable"
+// Key returns the namespaced lookup key for the gatus cache map:
+// "host|endpoint". Empty when no gatus is configured for this service.
+func (s Service) Key() string {
+	if !s.HasGatus() {
+		return ""
 	}
-	return s
-}
-
-// ServiceList is the canonical list. Single source of truth — keep it in
-// sync with the gatus endpoint registry on uptime-cloud / uptime-home.
-//
-// Section is where the card is rendered visually. GatusHost tells which
-// gatus server exposes the endpoint (cross-server monitoring).
-// Endpoint may include characters that need URL-encoding (e.g. "cloud_mail-(https)")
-//
-// Hidden = true removes the card but keeps the gatus fetch on (useful
-// when phasing out a service — uptime stays tracked while the card is gone).
-var ServiceList = []Service{
-	// --- Home (visual section) — services running on the home server,
-	// monitored by uptime-cloud (cloud gatus), unless noted otherwise.
-	{
-		Name:        "Audiobooks",
-		Product:     "Audiobookshelf",
-		ProductURL:  "https://www.audiobookshelf.org/",
-		Endpoint:    "home_audiobookshelf",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://books.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📚",
-		Description: "Audiobook and podcast library with streaming",
-	},
-	{
-		Name:        "Auth",
-		Product:     "Authelia",
-		ProductURL:  "https://www.authelia.com/",
-		Endpoint:    "home_authelia",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://auth.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔐",
-		Description: "SSO and 2FA front-door for protected services",
-	},
-	{
-		Name:        "CI/CD",
-		Product:     "Woodpecker",
-		ProductURL:  "https://woodpecker-ci.org/",
-		Endpoint:    "home_woodpecker-ci",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://ci.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔧",
-		Description: "Pipeline-based CI/CD for Docker stacks",
-	},
-	{
-		Name:        "OpenCode Web",
-		Product:     "OpenCode",
-		ProductURL:  "https://opencode.ai/",
-		Endpoint:    "home_opencode-web",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://code.${DOMAIN}",
-		Section:     "home",
-		Icon:        "💻",
-		Description: "AI coding assistant with a browser terminal UI",
-	},
-	{
-		Name:        "Files",
-		Product:     "FileBrowser",
-		ProductURL:  "https://filebrowser.org/",
-		Endpoint:    "home_filebrowser",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://files.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📁",
-		Description: "Web UI to browse, upload, and edit files",
-	},
-	{
-		Name:        "Git",
-		Product:     "Gitea",
-		ProductURL:  "https://about.gitea.com/",
-		Endpoint:    "home_gitea",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://git.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📦",
-		Description: "Git hosting with issues, PRs, and packages",
-	},
-	{
-		Name:        "Movies",
-		Product:     "Jellyfin",
-		ProductURL:  "https://jellyfin.org/",
-		Endpoint:    "home_jellyfin",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://movies.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🎬",
-		Description: "Stream movies, TV shows, and music",
-	},
-	{
-		Name:        "Notifications",
-		Product:     "ntfy",
-		ProductURL:  "https://ntfy.sh/",
-		Endpoint:    "home_ntfy",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://ntfy-home.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔔",
-		Description: "Pub/sub push notifications to phone, desktop, or scripts",
-	},
-	{
-		Name:        "AI Chat",
-		Product:     "Open WebUI",
-		ProductURL:  "https://github.com/open-webui/open-webui",
-		Endpoint:    "home_open-webui",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://ai.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🤖",
-		Description: "Chat with local LLMs and OpenAI-compatible APIs",
-	},
-	{
-		// Vaultwarden runs on the cloud server, but the user-facing link
-		// belongs in the Home section because it's how the user reaches
-		// passwords from their everyday entry point.
-		Name:        "Passwords",
-		Product:     "Vaultwarden",
-		ProductURL:  "https://github.com/dani-garcia/vaultwarden",
-		Endpoint:    "cloud_vaultwarden",
-		GatusHost:   "uptime-home",
-		URL:         "https://passwords.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔑",
-		Description: "Bitwarden-compatible password and secrets manager",
-	},
-	{
-		Name:        "Photos",
-		Product:     "Immich",
-		ProductURL:  "https://immich.app/",
-		Endpoint:    "home_immich",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://photos.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📷",
-		Description: "Google Photos replacement with mobile backups",
-	},
-	{
-		Name:        "Registry",
-		Product:     "Docker Registry",
-		ProductURL:  "https://github.com/distribution/distribution",
-		Endpoint:    "home_docker-registry",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://registry.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🐳",
-		Description: "Private Docker image registry",
-	},
-	{
-		Name:        "Search",
-		Product:     "SearXNG",
-		ProductURL:  "https://searxng.org/",
-		Endpoint:    "home_searxng",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://search.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔍",
-		Description: "Privacy-respecting meta-search across many engines",
-	},
-	{
-		Name:        "Speed",
-		Product:     "LibreSpeed",
-		ProductURL:  "https://librespeed.org/",
-		Endpoint:    "home_librespeed",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://speed-home.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🚀",
-		Description: "Network speed test for bandwidth and latency",
-	},
-	{
-		Name:        "Sync",
-		Product:     "Syncthing",
-		ProductURL:  "https://syncthing.net/",
-		Endpoint:    "home_syncthing",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://sync-home.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🔄",
-		Description: "Peer-to-peer file sync between devices and servers",
-	},
-	{
-		Name:        "Talk",
-		Product:     "Mirotalk",
-		ProductURL:  "https://mirotalk.org/",
-		Endpoint:    "home_mirotalk",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://talk.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📹",
-		Description: "Browser-based WebRTC video calls and conferencing",
-	},
-	{
-		Name:        "Time Tracker",
-		Product:     "Traggo",
-		ProductURL:  "https://traggo.net/",
-		Endpoint:    "home_traggo",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://time.${DOMAIN}",
-		Section:     "home",
-		Icon:        "⏰",
-		Description: "Tag-based time tracking with reports and charts",
-	},
-	{
-		Name:        "Tools",
-		Product:     "Omni Tools",
-		ProductURL:  "https://omnitools.app/",
-		Endpoint:    "home_omni-tools",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://tools.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🛠️",
-		Description: "Web toolbox for developers — converters, generators, formatters",
-	},
-	{
-		Name:        "Torrents",
-		Product:     "Transmission",
-		ProductURL:  "https://transmissionbt.com/",
-		Endpoint:    "home_transmission",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://torrents.${DOMAIN}",
-		Section:     "home",
-		Icon:        "⬇️",
-		Description: "BitTorrent client with a lightweight web UI",
-	},
-	{
-		Name:        "Traefik",
-		Product:     "Traefik",
-		ProductURL:  "https://traefik.io/",
-		Endpoint:    "home_traefik",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://proxy-home.${DOMAIN}",
-		Section:     "home",
-		Icon:        "🚦",
-		Description: "Reverse proxy and TLS termination dashboard",
-	},
-	{
-		Name:        "Uptime",
-		Product:     "Gatus",
-		ProductURL:  "https://gatus.io/",
-		Endpoint:    "home_gatus",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://uptime-home.${DOMAIN}",
-		Section:     "home",
-		Icon:        "⏱️",
-		Description: "Health and status monitoring for every service",
-	},
-	{
-		Name:        "YouTube",
-		Product:     "Piped",
-		ProductURL:  "https://github.com/TeamPiped/Piped",
-		Endpoint:    "home_piped",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://piped.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📺",
-		Description: "Privacy-friendly YouTube frontend, no ads or tracking",
-	},
-	{
-		Name:        "YouTube DL",
-		Product:     "MeTube",
-		ProductURL:  "https://github.com/alexta69/metube",
-		Endpoint:    "home_metube",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://metube.${DOMAIN}",
-		Section:     "home",
-		Icon:        "📺",
-		Description: "Download videos from YouTube and 1000+ supported sites",
-	},
-
-	// --- Cloud (visual section) — services running on the cloud server,
-	// monitored by uptime-home (home gatus).
-	{
-		Name:        "Healthchecks",
-		Product:     "Healthchecks",
-		ProductURL:  "https://healthchecks.io/",
-		Endpoint:    "cloud_healthchecks",
-		GatusHost:   "uptime-home",
-		URL:         "https://healthchecks.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "✅",
-		Description: "Cron job and scheduled task monitoring with alerts",
-	},
-	{
-		Name:        "Notifications",
-		Product:     "ntfy",
-		ProductURL:  "https://ntfy.sh/",
-		Endpoint:    "cloud_ntfy",
-		GatusHost:   "uptime-home",
-		URL:         "https://ntfy-cloud.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "🔔",
-		Description: "Pub/sub push notifications for the cloud server",
-	},
-	{
-		Name:        "Mail, Calendar & Contacts",
-		Product:     "Stalwart",
-		ProductURL:  "https://stalw.art/",
-		Endpoint:    "cloud_mail-(https)",
-		GatusHost:   "uptime-home",
-		URL:         "https://mail.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "📧",
-		Description: "Email server: SMTP, IMAP, JMAP, plus CalDAV / CardDAV calendar and address book sync",
-	},
-	{
-		Name:        "Webmail",
-		Product:     "Bulwark",
-		ProductURL:  "https://github.com/jordan-wright/bulwark",
-		Endpoint:    "cloud_bulwark",
-		GatusHost:   "uptime-home",
-		URL:         "https://webmail.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "📨",
-		Description: "Modern JMAP email client with a clean UI",
-	},
-	{
-		Name:        "Speed",
-		Product:     "LibreSpeed",
-		ProductURL:  "https://librespeed.org/",
-		Endpoint:    "cloud_librespeed",
-		GatusHost:   "uptime-home",
-		URL:         "https://speed-cloud.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "🚀",
-		Description: "Network speed test from the cloud server",
-	},
-	{
-		Name:        "Sync",
-		Product:     "Syncthing",
-		ProductURL:  "https://syncthing.net/",
-		Endpoint:    "cloud_syncthing",
-		GatusHost:   "uptime-home",
-		URL:         "https://sync-cloud.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "🔄",
-		Description: "Peer-to-peer file sync for the cloud server",
-	},
-	{
-		Name:        "Traefik",
-		Product:     "Traefik",
-		ProductURL:  "https://traefik.io/",
-		Endpoint:    "cloud_traefik",
-		GatusHost:   "uptime-home",
-		URL:         "https://proxy-cloud.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "🚦",
-		Description: "Reverse proxy and TLS termination dashboard",
-	},
-	{
-		Name:        "Uptime",
-		Product:     "Gatus",
-		ProductURL:  "https://gatus.io/",
-		Endpoint:    "cloud_gatus",
-		GatusHost:   "uptime-home",
-		URL:         "https://uptime-cloud.${DOMAIN}",
-		Section:     "cloud",
-		Icon:        "⏱️",
-		Description: "Cross-server health and status monitoring",
-	},
-
-	// --- Offsite (visual section) — services running on the offsite server.
-	{
-		Name:        "Speed",
-		Product:     "LibreSpeed",
-		ProductURL:  "https://librespeed.org/",
-		Endpoint:    "offsite_librespeed",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://speed-offsite.${DOMAIN}",
-		Section:     "offsite",
-		Icon:        "🚀",
-		Description: "Network speed test from the offsite server",
-	},
-	{
-		Name:        "Syncthing",
-		Product:     "Syncthing",
-		ProductURL:  "https://syncthing.net/",
-		Endpoint:    "offsite_syncthing",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://sync-offsite.${DOMAIN}",
-		Section:     "offsite",
-		Icon:        "🔄",
-		Description: "Offsite peer-to-peer file sync — geographic redundancy",
-	},
-	{
-		Name:        "Traefik",
-		Product:     "Traefik",
-		ProductURL:  "https://traefik.io/",
-		Endpoint:    "offsite_traefik",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://proxy-offsite.${DOMAIN}",
-		Section:     "offsite",
-		Icon:        "🚦",
-		Description: "Reverse proxy and TLS termination dashboard",
-	},
-
-	// --- Portable (visual section) — services running on the mini-PC K11.
-	{
-		Name:        "Home Assistant",
-		Product:     "Home Assistant",
-		ProductURL:  "https://www.home-assistant.io/",
-		Endpoint:    "home_home-assistant",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://home.${DOMAIN}",
-		Section:     "portable",
-		Icon:        "🏠",
-		Description: "Smart-home automation hub — lights, sensors, automations",
-	},
-	{
-		Name:        "OpenCode Web",
-		Product:     "OpenCode",
-		ProductURL:  "https://opencode.ai/",
-		Endpoint:    "portable_opencode-web",
-		GatusHost:   "uptime-cloud",
-		URL:         "https://code2.${DOMAIN}",
-		Section:     "portable",
-		Icon:        "💻",
-		Description: "AI coding assistant — secondary instance on portable",
-	},
-}
-
-// EndpointKey is the namespaced lookup key: "host|endpoint". Cache and
-// gatus client both use this form so a single map covers every endpoint.
-func EndpointKey(s Service) string {
 	return s.GatusHost + "|" + s.Endpoint
 }
 
-// Config is the runtime env config (separate from the static ServiceList).
+// Config bundles runtime env config + cached file content.
 type Config struct {
 	Port          string
 	Domain        string
-	UptimeHosts   []string // FQDNs (without scheme)
+	UptimeHosts   []string
 	UptimeTimeout time.Duration
 	CacheTTL      time.Duration
-	TemplatePath  string
+	ConfigPath    string // JSON file path (env: CONFIG_PATH)
+
+	// Cached file content (loaded on first request; refreshed on mtime change).
+	mu        sync.RWMutex
+	file      FileConfig
+	fileMtime time.Time
+	filePath  string
+	logger    *slog.Logger
 }
 
-// Load reads env vars. Returns an error if a required var is missing.
-// UptimeHosts is parsed as a comma-separated list.
+// Load reads env vars. Does NOT read the file — call File() per request.
+// Returns an error if a required var is missing.
 func Load() (Config, error) {
 	port := envOr("PORT", "8080")
 
@@ -512,8 +141,139 @@ func Load() (Config, error) {
 		UptimeHosts:   hosts,
 		UptimeTimeout: time.Duration(envInt("UPTIME_TIMEOUT_SECS", 5)) * time.Second,
 		CacheTTL:      time.Duration(envInt("CACHE_TTL_SECS", 60)) * time.Second,
-		TemplatePath:  envOr("TEMPLATE_PATH", "/app/web/template.html"),
+		ConfigPath:    envOr("CONFIG_PATH", "/app/config.json"),
+		filePath:      envOr("CONFIG_PATH", "/app/config.json"),
 	}, nil
+}
+
+// WithLogger attaches a logger for config-load warnings.
+func (c *Config) WithLogger(l *slog.Logger) { c.logger = l }
+
+// SetConfigPath overrides the catalog file path. Used by tests that
+// want to point at a temp file without going through env vars.
+func (c *Config) SetConfigPath(p string) {
+	c.ConfigPath = p
+	c.filePath = p
+}
+
+// File returns the cached FileConfig, re-reading from disk if mtime changed.
+// Errors during re-read are logged and the previous cache is returned.
+func (c *Config) File() (FileConfig, error) {
+	info, err := os.Stat(c.filePath)
+	if err != nil {
+		return c.snapshot(), fmt.Errorf("stat config %q: %w", c.filePath, err)
+	}
+
+	c.mu.RLock()
+	if c.fileMtime.Equal(info.ModTime()) && len(c.file.Servers) > 0 {
+		defer c.mu.RUnlock()
+		return c.file, nil
+	}
+	c.mu.RUnlock()
+
+	data, err := os.ReadFile(c.filePath)
+	if err != nil {
+		return c.snapshot(), fmt.Errorf("read config %q: %w", c.filePath, err)
+	}
+	var fc FileConfig
+	if err := json.Unmarshal(data, &fc); err != nil {
+		return c.snapshot(), fmt.Errorf("parse config %q: %w", c.filePath, err)
+	}
+	if err := validate(fc); err != nil {
+		return c.snapshot(), fmt.Errorf("invalid config %q: %w", c.filePath, err)
+	}
+
+	c.mu.Lock()
+	c.file = fc
+	c.fileMtime = info.ModTime()
+	c.mu.Unlock()
+
+	if c.logger != nil {
+		c.logger.Info("config reloaded",
+			slog.String("path", c.filePath),
+			slog.Int("servers", len(fc.Servers)),
+			slog.Int("services", totalServices(fc)),
+		)
+	}
+	return fc, nil
+}
+
+func (c *Config) snapshot() FileConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.file
+}
+
+// TotalServices is the count of services across all servers (excludes
+// hidden services from the rendered-page count, but includes them here
+// for parity with the gatus lookup set).
+func (f FileConfig) TotalServices() int { return totalServices(f) }
+
+// EndpointKeys returns the namespaced gatus lookup keys for every
+// service that has both `endpoint` and `gatus_host` set. Hidden services
+// are included — the user wants the gatus fetch to stay on even when
+// phasing out a card.
+func (f FileConfig) EndpointKeys() []string {
+	var keys []string
+	for _, s := range f.Servers {
+		for _, svc := range s.Services {
+			if k := svc.Key(); k != "" {
+				keys = append(keys, k)
+			}
+		}
+	}
+	return keys
+}
+
+// Validate returns an error if the config is missing required fields
+// or has duplicate server/service names. Called from File() and from tests.
+func Validate(f FileConfig) error { return validate(f) }
+
+func validate(f FileConfig) error {
+	seenServers := map[string]bool{}
+	for i, s := range f.Servers {
+		if strings.TrimSpace(s.Name) == "" {
+			return fmt.Errorf("servers[%d]: name is required", i)
+		}
+		if seenServers[s.Name] {
+			return fmt.Errorf("servers[%d]: duplicate server name %q", i, s.Name)
+		}
+		seenServers[s.Name] = true
+
+		if len(s.Services) == 0 {
+			continue
+		}
+		seenServices := map[string]bool{}
+		for j, svc := range s.Services {
+			if strings.TrimSpace(svc.Name) == "" {
+				return fmt.Errorf("servers[%d].services[%d]: name is required", i, j)
+			}
+			if seenServices[svc.Name] {
+				return fmt.Errorf("servers[%d].services[%d]: duplicate service name %q", i, j, svc.Name)
+			}
+			seenServices[svc.Name] = true
+
+			if strings.TrimSpace(svc.URL) == "" {
+				return fmt.Errorf("servers[%d].services[%d] (%s): url is required", i, j, svc.Name)
+			}
+			// Half-configured gatus is likely a mistake — surface it.
+			if (svc.Endpoint == "") != (svc.GatusHost == "") {
+				return fmt.Errorf(
+					"servers[%d].services[%d] (%s): endpoint and gatus_host must both be set or both empty",
+					i, j, svc.Name,
+				)
+			}
+		}
+	}
+	return nil
+}
+
+func totalServices(f FileConfig) int {
+	n := 0
+	for _, s := range f.Servers {
+		n += len(s.Services)
+	}
+	return n
 }
 
 func envOr(key, def string) string {

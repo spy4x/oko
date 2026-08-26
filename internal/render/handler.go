@@ -46,11 +46,12 @@ type PageData struct {
 
 // SectionView is one rendered group on the page (Home, Cloud, ...).
 type SectionView struct {
-	Name     string
-	Counter  string // "23/24 healthy"
-	Uptime   string // "99.95% · 30d" or "—"
-	AllGood  bool
-	Services []ServiceView
+	Name        string
+	Counter     string // "23/24 healthy"
+	Uptime      string // "99.95% · 30d" or "—"
+	UptimeClass string // CSS modifier for the section pill: "good"/"ok"/"warn"/"bad"/""
+	AllGood     bool
+	Services    []ServiceView
 }
 
 // ServiceView is one card. Healthy is the user-facing state: unknown is
@@ -65,8 +66,9 @@ type ServiceView struct {
 	Description string
 	Healthy     bool
 	Down        bool
-	Uptime      string
-	DetailURL   string
+	Uptime      string // formatted "99.95%" or ""
+	UptimeClass string // CSS modifier for the pill: "good"/"ok"/"warn"/"bad"/""
+	DetailURL   string // gatus per-endpoint detail page (set when fetch ok)
 	Endpoint    string
 }
 
@@ -191,12 +193,19 @@ func buildPage(domain string, file config.FileConfig, status map[string]gatus.St
 		total := len(sec.Services)
 		sec.Name = server.Name
 		sec.Counter = fmt.Sprintf("%d/%d healthy", healthy, total)
+		sec.AllGood = healthy == total
 		if haveUptime {
 			sec.Uptime = fmt.Sprintf("%.2f%% · 30d", maxUptime)
 		} else {
 			sec.Uptime = "—"
 		}
-		sec.AllGood = healthy == total
+		// Colour the section pill only when the section is fully healthy
+		// — otherwise the green pill next to a red "N/M healthy" counter
+		// reads as a contradiction. Uptime is the MAX across the section,
+		// so a single 100%-uptime service can mask a down neighbour.
+		if haveUptime && sec.AllGood {
+			sec.UptimeClass = uptimeClass(&maxUptime)
+		}
 		sections = append(sections, sec)
 	}
 
@@ -233,8 +242,42 @@ func serviceViewFrom(s config.Service, domain string, st gatus.Status) ServiceVi
 	}
 	if st.Uptime != nil {
 		sv.Uptime = fmt.Sprintf("%.2f%%", *st.Uptime)
+		sv.UptimeClass = uptimeClass(st.Uptime)
 	}
 	return sv
+}
+
+// uptimeClass maps a 0..100 uptime percentage to a CSS modifier.
+//
+// Four tiers, picked from operator feedback on the dashboard:
+//
+//	≥95%   good        solid green
+//	90-95% transition  yellow→green CSS gradient (mixed zone)
+//	80-90% warn        solid amber/yellow
+//	<80%   bad         solid red
+//
+// The 90-95% band renders as an actual gradient (yellow on the left,
+// green on the right) instead of a single colour — that's what "mix of
+// yellow and green" means in the visual spec. The class names are the
+// suffixes used in the template's `<span class="pill--X">` and
+// `<a class="service-uptime--X">` so they stay in sync with CSS.
+//
+// nil → "" — caller decides how to render the absence (we just don't
+// emit a class).
+func uptimeClass(pct *float64) string {
+	if pct == nil {
+		return ""
+	}
+	switch {
+	case *pct >= 95.0:
+		return "good"
+	case *pct >= 90.0:
+		return "transition"
+	case *pct >= 80.0:
+		return "warn"
+	default:
+		return "bad"
+	}
 }
 
 // funcMap exposes helpers to the template.

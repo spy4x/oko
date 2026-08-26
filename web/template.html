@@ -29,6 +29,14 @@
         --accent-soft: rgba(94, 158, 255, 0.12);
         --healthy: #4ade80;
         --down: #ef4444;
+        --uptime-warn: #fbbf24;    /* amber/yellow - 80-90% */
+        --uptime-mixed: #84cc16;   /* lime (yellow-green) - section-pill representative of the 90-95% gradient tier */
+        --uptime-good-bg: rgba(74, 222, 128, 0.10);
+        --uptime-warn-bg: rgba(251, 191, 36, 0.10);
+        --uptime-bad-bg: rgba(239, 68, 68, 0.10);
+        --uptime-good-bd: rgba(74, 222, 128, 0.40);
+        --uptime-warn-bd: rgba(251, 191, 36, 0.40);
+        --uptime-bad-bd: rgba(239, 68, 68, 0.40);
         --radius-card: 14px;
         --radius-pill: 999px;
         --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
@@ -219,6 +227,15 @@
         font-style: italic;
       }
 
+      /* Uptime color-coding for the section pill (text-only, no bg).
+         The 90-95% band — class "transition" on the per-service pill —
+         uses a CSS gradient there; section pills collapse it to a single
+         lime colour for readability. */
+      .pill--good       { color: var(--healthy); }
+      .pill--transition { color: var(--uptime-mixed); }
+      .pill--warn       { color: var(--uptime-warn); }
+      .pill--bad        { color: var(--down); }
+
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -310,7 +327,49 @@
         border-radius: var(--radius-pill);
         padding: 2px 7px;
         font-variant-numeric: tabular-nums;
+        text-decoration: none;
+        transition: color 0.15s ease, border-color 0.15s ease,
+          background 0.15s ease;
       }
+
+      /* Per-service uptime color-coding. The link doubles as the
+         color-coded uptime pill AND the entry point to the per-service
+         gatus detail page. Modifier classes (--good/--transition/
+         --warn/--bad) come from uptimeClass() in handler.go. The
+         transition tier (90-95%) is a CSS gradient instead of a solid
+         fill — that's what "mix of yellow and green" means in the
+         visual spec. */
+      .service-uptime--good {
+        color: var(--healthy);
+        border-color: var(--uptime-good-bd);
+        background: var(--uptime-good-bg);
+      }
+      .service-uptime--transition {
+        /* Dark text on the bright gradient — readable on both the yellow
+           and green halves. Border is a midpoint lime so it doesn't
+           clash with either end of the gradient. */
+        color: var(--bg-page);
+        border-color: rgba(132, 204, 22, 0.55);
+        background: linear-gradient(
+          to right,
+          var(--uptime-warn) 0%,
+          var(--healthy) 100%
+        );
+      }
+      .service-uptime--warn {
+        color: var(--uptime-warn);
+        border-color: var(--uptime-warn-bd);
+        background: var(--uptime-warn-bg);
+      }
+      .service-uptime--bad {
+        color: var(--down);
+        border-color: var(--uptime-bad-bd);
+        background: var(--uptime-bad-bg);
+      }
+      /* No transform here — the parent .service:hover already lifts the
+         whole card; stacking makes the pill drift relative to its card
+         on hover, which reads as jitter. The colour shift alone is enough
+         hover feedback for the link. */
 
       .service-product {
         position: absolute;
@@ -428,7 +487,9 @@
               <span class="pill {{ if .AllGood }}pill-healthy{{ else }}pill-degraded{{ end }}">
                 {{ .Counter }}
               </span>
-              {{ if .Uptime }}
+              {{ if .UptimeClass }}
+              <span class="pill pill--{{ .UptimeClass }}">{{ .Uptime }}</span>
+              {{ else }}
               <span class="pill">{{ .Uptime }}</span>
               {{ end }}
             </div>
@@ -446,7 +507,9 @@
                 <p class="service-description">{{ .Description }}</p>
               </a>
               {{ if .Uptime }}
-              <span class="service-uptime" title="30-day uptime">{{ .Uptime }}</span>
+              <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
+                 class="service-uptime service-uptime--{{ .UptimeClass }}"
+                 title="30-day uptime">{{ .Uptime }} ↗</a>
               {{ end }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
                 {{ .Product }}

@@ -368,3 +368,226 @@ func TestBuildPage_RefreshBypass(t *testing.T) {
 }
 
 func ptrF(f float64) *float64 { return &f }
+
+func TestUptimeClass_Thresholds(t *testing.T) {
+	cases := []struct {
+		name string
+		pct  float64
+		want string
+	}{
+		{"exact 100", 100.0, "good"},
+		{"just under 100", 99.99, "good"},
+		{"at 95.0 boundary", 95.0, "good"},
+		{"just under 95.0", 94.99, "transition"},
+		{"mid transition", 92.5, "transition"},
+		{"at 90.0 boundary", 90.0, "transition"},
+		{"just under 90.0", 89.99, "warn"},
+		{"mid warn", 85.0, "warn"},
+		{"at 80.0 boundary", 80.0, "warn"},
+		{"just under 80.0", 79.99, "bad"},
+		{"zero", 0.0, "bad"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := uptimeClass(&tc.pct)
+			if got != tc.want {
+				t.Errorf("uptimeClass(%v) = %q, want %q", tc.pct, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUptimeClass_NilReturnsEmpty(t *testing.T) {
+	if got := uptimeClass(nil); got != "" {
+		t.Errorf("uptimeClass(nil) = %q, want empty string", got)
+	}
+}
+
+// richerTemplate mirrors the production template enough to exercise the
+// uptime pill as an <a> with the color modifier class. Mirrors production
+// selectors: .service-uptime.service-uptime--<class> and .pill.pill--<class>.
+// Also renders the section counter pill so tests can assert on AllGood.
+const richerTemplate = `<!DOCTYPE html>
+<html>
+<body>
+{{ range .Sections }}
+<section>
+  <div>
+    <span class="pill {{ if .AllGood }}pill-healthy{{ else }}pill-degraded{{ end }}">
+      {{ .Counter }}
+    </span>
+    {{ if .UptimeClass }}
+    <span class="pill pill--{{ .UptimeClass }}">{{ .Uptime }}</span>
+    {{ else }}
+    <span class="pill">{{ .Uptime }}</span>
+    {{ end }}
+  </div>
+  <ul>
+  {{ range .Services }}
+    <li data-endpoint="{{ .Endpoint }}">
+      <a href="{{ .URL | safeURL }}" class="service-main">{{ .Name }}</a>
+      {{ if .Uptime }}
+      <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
+         class="service-uptime service-uptime--{{ .UptimeClass }}"
+         title="30-day uptime">{{ .Uptime }} ↗</a>
+      {{ end }}
+    </li>
+  {{ end }}
+  </ul>
+</section>
+{{ end }}
+</body>
+</html>`
+
+func TestBuildPage_ServiceUptimeRendersAsLink(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "https://a.example",
+	      "endpoint": "home_a", "gatus_host": "uptime-cloud" }
+	  ]}]
+	}`
+	h, _ := newHandlerForTestWithTemplate(t, cfgJSON, richerTemplate, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		return map[string]gatus.Status{
+			"uptime-cloud|home_a": {
+				Healthy:   &healthy,
+				Uptime:    ptrF(99.95),
+				DetailURL: "https://uptime-cloud.example.com/endpoints/home_a",
+			},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 200 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	wantSubstrings := []string{
+		// Anchor wraps the uptime pill.
+		`<a href="https://uptime-cloud.example.com/endpoints/home_a"`,
+		`target="_blank"`,
+		`rel="noopener noreferrer"`,
+		// Color-coded modifier class.
+		`class="service-uptime service-uptime--good"`,
+		// Visible text.
+		`99.95%`,
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(body, s) {
+			t.Errorf("missing %q in body:\n%s", s, body)
+		}
+	}
+}
+
+func TestBuildPage_SectionUptimeColorClass(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "u", "endpoint": "home_a", "gatus_host": "uptime-cloud" },
+	    { "name": "B", "url": "u", "endpoint": "home_b", "gatus_host": "uptime-cloud" }
+	  ]}]
+	}`
+	h, _ := newHandlerForTestWithTemplate(t, cfgJSON, richerTemplate, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		// A is 100% (good), B is 92% (transition tier). Section pill
+		// shows the max — 100% — so it expects --good.
+		return map[string]gatus.Status{
+			"uptime-cloud|home_a": {Healthy: &healthy, Uptime: ptrF(100.0)},
+			"uptime-cloud|home_b": {Healthy: &healthy, Uptime: ptrF(92.0)},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, `class="pill pill--good"`) {
+		t.Errorf("expected section pill--good (max 100%%); body:\n%s", body)
+	}
+	if !strings.Contains(body, `class="service-uptime service-uptime--good"`) {
+		t.Errorf("expected service-uptime--good on A; body:\n%s", body)
+	}
+	if !strings.Contains(body, `class="service-uptime service-uptime--transition"`) {
+		t.Errorf("expected service-uptime--transition on B (92%%); body:\n%s", body)
+	}
+}
+
+func TestBuildPage_SectionDegradedOmitsUptimeColorClass(t *testing.T) {
+	// Section has one healthy service at 100% and one DOWN service.
+	// Section's max uptime is 100% (would be "good" tier) but the
+	// counter is "1/2 healthy" with the degraded (red) pill. A green
+	// pill next to a red counter reads contradictory — section pill
+	// must stay colourless in this case.
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "u", "endpoint": "home_a", "gatus_host": "uptime-cloud" },
+	    { "name": "B", "url": "u", "endpoint": "home_b", "gatus_host": "uptime-cloud" }
+	  ]}]
+	}`
+	h, _ := newHandlerForTestWithTemplate(t, cfgJSON, richerTemplate, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		down := false
+		return map[string]gatus.Status{
+			"uptime-cloud|home_a": {Healthy: &healthy, Uptime: ptrF(100.0),
+				DetailURL: "https://uptime-cloud.example.com/endpoints/home_a"},
+			"uptime-cloud|home_b": {Healthy: &down, Uptime: ptrF(50.0),
+				DetailURL: "https://uptime-cloud.example.com/endpoints/home_b"},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if strings.Contains(body, "pill--good") {
+		t.Errorf("expected section pill NOT to use --good when section is degraded; body:\n%s", body)
+	}
+	if strings.Contains(body, "pill--fair") || strings.Contains(body, "pill--warn") || strings.Contains(body, "pill--bad") {
+		t.Errorf("expected section pill to have NO colour class when degraded; body:\n%s", body)
+	}
+	if !strings.Contains(body, "1/2 healthy") {
+		t.Errorf("expected 1/2 healthy counter; body:\n%s", body)
+	}
+	if !strings.Contains(body, "pill-degraded") {
+		t.Errorf("expected degraded counter pill; body:\n%s", body)
+	}
+}
+
+func TestBuildPage_NoUptimeOmitsColorClass(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "u", "endpoint": "home_a", "gatus_host": "uptime-cloud" }
+	  ]}]
+	}`
+	// No gatus status → unknown → no uptime → no link, no class.
+	h, _ := newHandlerForTestWithTemplate(t, cfgJSON, richerTemplate, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	if strings.Contains(body, "service-uptime") {
+		t.Errorf("expected no .service-uptime when unknown; body:\n%s", body)
+	}
+	if strings.Contains(body, "pill--") {
+		t.Errorf("expected no pill--* class on section pill when no data; body:\n%s", body)
+	}
+}
+
+// newHandlerForTestWithTemplate is a sibling of newHandlerForTest that
+// takes an explicit template body. Lets each test pick the level of
+// production fidelity it needs.
+func newHandlerForTestWithTemplate(
+	t *testing.T,
+	configJSON, templateBody string,
+	statusFn func(keys []string) map[string]gatus.Status,
+) (http.Handler, *config.Config) {
+	t.Helper()
+	templatePath := writeTemplate(t, templateBody)
+	cfg, _ := writeConfig(t, configJSON)
+	c := cache.New(time.Hour, func(_ context.Context, keys []string) (map[string]gatus.Status, error) {
+		if statusFn == nil {
+			return map[string]gatus.Status{}, nil
+		}
+		return statusFn(keys), nil
+	})
+	t.Cleanup(c.Stop)
+	h, err := NewHandler(c, cfg, templatePath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h, cfg
+}

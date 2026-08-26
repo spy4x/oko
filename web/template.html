@@ -29,6 +29,16 @@
         --accent-soft: rgba(94, 158, 255, 0.12);
         --healthy: #4ade80;
         --down: #ef4444;
+        --uptime-fair: #fbbf24;    /* amber  - 99.0..99.9 ("fair" not "ok" — amber reads as warning, so the label stays neutral) */
+        --uptime-warn: #fb923c;    /* orange - 95.0..99.0 */
+        --uptime-good-bg: rgba(74, 222, 128, 0.10);
+        --uptime-fair-bg: rgba(251, 191, 36, 0.10);
+        --uptime-warn-bg: rgba(251, 146, 60, 0.10);
+        --uptime-bad-bg: rgba(239, 68, 68, 0.10);
+        --uptime-good-bd: rgba(74, 222, 128, 0.40);
+        --uptime-fair-bd: rgba(251, 191, 36, 0.40);
+        --uptime-warn-bd: rgba(251, 146, 60, 0.40);
+        --uptime-bad-bd: rgba(239, 68, 68, 0.40);
         --radius-card: 14px;
         --radius-pill: 999px;
         --shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
@@ -219,6 +229,14 @@
         font-style: italic;
       }
 
+      /* Uptime color-coding. Class suffix picked by Go from uptimeClass():
+         good = ≥99.9% (green), fair = ≥99.0% (amber), warn = ≥95.0% (orange),
+         bad = <95% (red). The empty modifier stays the default muted grey. */
+      .pill--good { color: var(--healthy); }
+      .pill--fair { color: var(--uptime-fair); }
+      .pill--warn { color: var(--uptime-warn); }
+      .pill--bad  { color: var(--down); }
+
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -310,7 +328,39 @@
         border-radius: var(--radius-pill);
         padding: 2px 7px;
         font-variant-numeric: tabular-nums;
+        text-decoration: none;
+        transition: color 0.15s ease, border-color 0.15s ease,
+          background 0.15s ease;
       }
+
+      /* Per-service uptime color-coding. The link doubles as the
+         color-coded uptime pill AND the entry point to the per-service
+         gatus detail page. Modifier classes (--good/--fair/--warn/--bad)
+         come from uptimeClass() in handler.go. */
+      .service-uptime--good {
+        color: var(--healthy);
+        border-color: var(--uptime-good-bd);
+        background: var(--uptime-good-bg);
+      }
+      .service-uptime--fair {
+        color: var(--uptime-fair);
+        border-color: var(--uptime-fair-bd);
+        background: var(--uptime-fair-bg);
+      }
+      .service-uptime--warn {
+        color: var(--uptime-warn);
+        border-color: var(--uptime-warn-bd);
+        background: var(--uptime-warn-bg);
+      }
+      .service-uptime--bad {
+        color: var(--down);
+        border-color: var(--uptime-bad-bd);
+        background: var(--uptime-bad-bg);
+      }
+      /* No transform here — the parent .service:hover already lifts the
+         whole card; stacking makes the pill drift relative to its card
+         on hover, which reads as jitter. The colour shift alone is enough
+         hover feedback for the link. */
 
       .service-product {
         position: absolute;
@@ -428,7 +478,9 @@
               <span class="pill {{ if .AllGood }}pill-healthy{{ else }}pill-degraded{{ end }}">
                 {{ .Counter }}
               </span>
-              {{ if .Uptime }}
+              {{ if .UptimeClass }}
+              <span class="pill pill--{{ .UptimeClass }}">{{ .Uptime }}</span>
+              {{ else }}
               <span class="pill">{{ .Uptime }}</span>
               {{ end }}
             </div>
@@ -446,7 +498,9 @@
                 <p class="service-description">{{ .Description }}</p>
               </a>
               {{ if .Uptime }}
-              <span class="service-uptime" title="30-day uptime">{{ .Uptime }}</span>
+              <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
+                 class="service-uptime service-uptime--{{ .UptimeClass }}"
+                 title="30-day uptime">{{ .Uptime }} ↗</a>
               {{ end }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
                 {{ .Product }}

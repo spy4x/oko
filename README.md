@@ -11,6 +11,11 @@ gatus instances, and Oko fans out the badge SVGs in parallel behind a
 60-second in-memory single-flight cache and renders one HTML page
 listing every service with its current status and 30-day uptime.
 
+**Oko** (Russian: око — "eye") is a tiny server-rendered dashboard for
+every self-hosted service across a homelab.
+
+**Live example:** [https://dash.antonshubin.com/](https://dash.antonshubin.com/)
+
 ```
  browser ──GET /──► oko (Go) :8080
                      │

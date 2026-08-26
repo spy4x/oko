@@ -52,8 +52,11 @@ steps:
       # (`spy4x`), password is the token. Fine-grained tokens work too
       # but require `write:packages` + the matching username field.
       username: spy4x
+      # Secret name is case-sensitive in Woodpecker — must match the
+      # exact name set in the repo's Secrets tab. The convention
+      # `GHCR_PUSH_TOKEN` is upper-snake to match the env-var feel.
       password:
-        from_secret: ghcr_push_token
+        from_secret: GHCR_PUSH_TOKEN
     when:
       event: [push, tag]
       branch: main

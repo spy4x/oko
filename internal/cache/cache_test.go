@@ -19,7 +19,7 @@ func TestCache_FreshHit(t *testing.T) {
 		t.Fatal("fetcher should not be called on a fresh hit")
 		return nil, nil
 	})
-	c.store(data)
+	c.store([]string{"uptime-cloud|home_a"}, data)
 	defer c.Stop()
 
 	got, err := c.Get(t.Context(), []string{"uptime-cloud|home_a"})
@@ -129,6 +129,77 @@ func TestCache_FetchErrorPropagated(t *testing.T) {
 	_, err := c.Get(t.Context(), nil)
 	if !errors.Is(err, want) {
 		t.Errorf("got %v, want %v", err, want)
+	}
+}
+
+// A key whose first fetch fails must come back on the next tick. The
+// ticker used to re-fetch only the keys present in the snapshot, so a
+// failed key stayed missing until restart while the ticker kept the
+// snapshot "fresh" (issue #11).
+func TestCache_TickerRetriesFailedKeys(t *testing.T) {
+	var calls int32
+	c := New(20*time.Millisecond, func(_ context.Context, keys []string) (map[string]gatus.Status, error) {
+		out := map[string]gatus.Status{}
+		first := atomic.AddInt32(&calls, 1) == 1
+		for _, k := range keys {
+			if first && k == "h|b" {
+				continue // b fails on the first fetch only
+			}
+			out[k] = gatus.Status{Healthy: ptrBool(true)}
+		}
+		return out, nil
+	})
+	defer c.Stop()
+
+	keys := []string{"h|a", "h|b"}
+	got, err := c.Get(t.Context(), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["h|b"]; ok {
+		t.Fatal("h|b should be missing after the first fetch")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := c.snapshot()["h|b"]; ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ticker never retried h|b")
+}
+
+// Adding a service to the catalog changes the key set; the next Get
+// must fetch instead of serving the old snapshot until the TTL ends.
+func TestCache_NewKeysBypassFreshSnapshot(t *testing.T) {
+	var hits int32
+	c := New(time.Hour, func(_ context.Context, keys []string) (map[string]gatus.Status, error) {
+		atomic.AddInt32(&hits, 1)
+		out := map[string]gatus.Status{}
+		for _, k := range keys {
+			out[k] = gatus.Status{Healthy: ptrBool(true)}
+		}
+		return out, nil
+	})
+	defer c.Stop()
+
+	if _, err := c.Get(t.Context(), []string{"h|a"}); err != nil {
+		t.Fatal(err)
+	}
+	// The same set again is a hit.
+	if _, err := c.Get(t.Context(), []string{"h|a"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Get(t.Context(), []string{"h|b", "h|a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["h|b"]; !ok {
+		t.Error("new key h|b not fetched")
+	}
+	if n := atomic.LoadInt32(&hits); n != 2 {
+		t.Errorf("hits=%d, want 2", n)
 	}
 }
 

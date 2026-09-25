@@ -2,7 +2,7 @@
 //
 // Gatus's badge API surface (twinproduction/gatus:latest):
 //
-//	GET /api/v1/endpoints/{key}/health/badge.svg   — SVG with #40cc11 (up) or #e05d44 (down)
+//	GET /api/v1/endpoints/{key}/health/badge.svg   — SVG with text "up", "down" or "?"
 //	GET /api/v1/endpoints/{key}/uptimes/30d/badge.svg — SVG with "99.99%" text inside <text>
 //	GET /endpoints/{key}                            — HTML detail page (used for the "open on down" link)
 //
@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -60,9 +61,16 @@ func NewClient(fqdns []string, hostTimeout time.Duration) *Client {
 		}
 		hosts[short] = fqdn
 	}
+	// A refresh fires two requests per service at the same one or two
+	// hosts. DefaultTransport keeps only 2 idle connections per host, so
+	// most of each burst would redo TCP + TLS every time (issue #8).
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 256
+	tr.MaxIdleConnsPerHost = 128
+	tr.MaxConnsPerHost = 32
 	return &Client{
 		hosts:   hosts,
-		http:    &http.Client{Timeout: hostTimeout},
+		http:    &http.Client{Timeout: hostTimeout, Transport: tr},
 		timeout: hostTimeout,
 		ua:      "oko/1.0",
 	}
@@ -73,15 +81,20 @@ func NewClient(fqdns []string, hostTimeout time.Duration) *Client {
 func (c *Client) SetHTTPClient(h HTTPClient) { c.http = h }
 
 var (
+	// healthTextRe matches the badge's value text: "up", "down" or "?".
+	healthTextRe = regexp.MustCompile(`>\s*(up|down|\?)\s*<`)
+	// Fill colours, used only when the text is missing. Current gatus
+	// paints "down" #c7130a; #e05d44 is the shields.io red older
+	// setups used.
 	healthGreen = "#40cc11"
-	healthRed   = "#e05d44"
+	healthReds  = []string{"#c7130a", "#e05d44"}
 	uptimeRe    = regexp.MustCompile(`>\s*([\d.]+)%\s*<`)
 )
 
 // FetchAll fans out one health + one uptime fetch per endpoint, in parallel.
 //
 // keys is a slice of namespaced keys in the form "host|endpoint"
-// (see config.EndpointKey). FetchAll resolves host → FQDN and fetches
+// (see config.Service.Key). FetchAll resolves host → FQDN and fetches
 // both badges in parallel. Per-endpoint failures leave that key absent
 // from the result map; callers should treat absent == unknown.
 //
@@ -94,14 +107,13 @@ func (c *Client) FetchAll(ctx context.Context, keys []string) (map[string]Status
 	work := make([]string, 0, len(keys))
 	for _, k := range keys {
 		// Validate format early; skip unknowns.
-		host, endpoint, ok := splitKey(k)
+		host, _, ok := splitKey(k)
 		if !ok {
 			continue
 		}
 		if _, known := c.hosts[host]; !known {
 			continue
 		}
-		_ = endpoint
 		work = append(work, k)
 	}
 	if len(work) == 0 {
@@ -147,10 +159,6 @@ func (c *Client) fetchOne(ctx context.Context, host, endpoint string) (Status, b
 		return Status{}, false
 	}
 
-	type badge struct {
-		healthy *bool
-		uptime  *float64
-	}
 	var (
 		wg       sync.WaitGroup
 		health   *bool
@@ -196,10 +204,10 @@ func (c *Client) fetchOne(ctx context.Context, host, endpoint string) (Status, b
 
 // fetchBadge gets one badge SVG. kind is "health" or "uptimes/30d".
 func (c *Client) fetchBadge(ctx context.Context, host, endpoint, kind string) (string, error) {
-	url := fmt.Sprintf("https://%s/api/v1/endpoints/%s/%s/badge.svg", host, endpoint, kind)
+	u := fmt.Sprintf("https://%s/api/v1/endpoints/%s/%s/badge.svg", host, url.PathEscape(endpoint), kind)
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +219,7 @@ func (c *Client) fetchBadge(ctx context.Context, host, endpoint, kind string) (s
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s -> %d", url, resp.StatusCode)
+		return "", fmt.Errorf("%s -> %d", u, resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
@@ -221,16 +229,27 @@ func (c *Client) fetchBadge(ctx context.Context, host, endpoint, kind string) (s
 }
 
 // parseHealth reads the badge SVG body and returns a *bool for healthy.
-// nil pointer = unknown (couldn't decide from colour). We never return
-// (false, nil) for an empty body; callers must check err.
+// The value text ("up"/"down") decides; the fill colour is a fallback.
+// A "?" badge (gatus has no results yet) or anything unrecognised is
+// an error, which callers treat as unknown.
 func parseHealth(body string) (*bool, error) {
-	switch {
-	case strings.Contains(body, healthGreen):
-		t := true
-		return &t, nil
-	case strings.Contains(body, healthRed):
-		f := false
-		return &f, nil
+	up, down := true, false
+	if m := healthTextRe.FindStringSubmatch(body); m != nil {
+		switch m[1] {
+		case "up":
+			return &up, nil
+		case "down":
+			return &down, nil
+		}
+		return nil, fmt.Errorf("gatus reports health unknown")
+	}
+	if strings.Contains(body, healthGreen) {
+		return &up, nil
+	}
+	for _, red := range healthReds {
+		if strings.Contains(body, red) {
+			return &down, nil
+		}
 	}
 	return nil, fmt.Errorf("unknown badge fill")
 }

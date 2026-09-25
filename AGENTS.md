@@ -19,9 +19,12 @@
   file is enough — no restart needed.
 - **Pure stdlib.** No third-party deps. `html/template` escapes user data by
   default — keep it that way.
-- **Unknown ≠ down.** A failed gatus fetch leaves the service rendered as
-  healthy (no red border) but with no uptime number. Don't conflate "gatus is
-  broken" with "service is broken".
+- **Unknown ≠ down, unknown ≠ healthy.** A failed gatus fetch leaves the
+  service with no red border and no uptime number, marked "unknown", and
+  the section counter reports it apart from healthy ("18/22 healthy ·
+  4 unknown"). Don't conflate "gatus is broken" with "service is broken",
+  and don't claim health you don't know. Services with no gatus configured
+  are not monitored and count as healthy.
 
 ## Architecture
 
@@ -82,8 +85,9 @@ empty (half-configured gatus is rejected at validation).
 
 ## Health parsing rules
 
-- Health: SVG body must contain `#40cc11` (up) or `#e05d44` (down). Anything
-  else → unknown → render as healthy
+- Health: the badge's value text `up` / `down` decides (`?` → unknown). If
+  there is no such text, the fill colour: `#40cc11` up, `#c7130a` (current
+  gatus) or `#e05d44` down. Anything else → unknown
 - Uptime: regex `>\s*([\d.]+)%\s*<` extracts the percentage from the badge's
   `<text>` element. No match → unknown → omit uptime pill for that section
 

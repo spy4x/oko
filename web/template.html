@@ -222,6 +222,16 @@
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
       }
 
+      .pill-unknown {
+        color: var(--text-secondary);
+        border-style: dashed;
+        border-color: var(--border-hover);
+      }
+      .pill-unknown::before {
+        content: "?";
+        font-weight: 600;
+      }
+
       .pill-empty {
         color: var(--text-muted);
         font-style: italic;
@@ -269,6 +279,11 @@
       .service--down {
         border-color: var(--border-down);
         box-shadow: 0 0 0 1px var(--border-down), 0 0 20px rgba(239, 68, 68, 0.18);
+      }
+
+      .service--unknown {
+        border-style: dashed;
+        border-color: var(--border-hover);
       }
 
       .service--down:hover {
@@ -365,6 +380,11 @@
         color: var(--down);
         border-color: var(--uptime-bad-bd);
         background: var(--uptime-bad-bg);
+      }
+      .service-uptime--unknown {
+        border-style: dashed;
+        border-color: var(--border-hover);
+        cursor: help;
       }
       /* No transform here — the parent .service:hover already lifts the
          whole card; stacking makes the pill drift relative to its card
@@ -484,7 +504,7 @@
           <div class="section-header">
             <h2 class="section-title">{{ .Name }}</h2>
             <div class="section-stats">
-              <span class="pill {{ if .AllGood }}pill-healthy{{ else }}pill-degraded{{ end }}">
+              <span class="pill {{ if .AllGood }}pill-healthy{{ else if .Degraded }}pill-degraded{{ else }}pill-unknown{{ end }}">
                 {{ .Counter }}
               </span>
               {{ if .UptimeClass }}
@@ -496,7 +516,7 @@
           </div>
           <ul class="grid">
             {{ range .Services }}
-            <li class="service{{ if .Down }} service--down{{ end }}" data-endpoint="{{ .Endpoint }}">
+            <li class="service{{ if .Down }} service--down{{ else if .Unknown }} service--unknown{{ end }}" data-endpoint="{{ .Endpoint }}">
               {{ if .Down }}
               <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener" class="service-main" title="Down — open uptime page">
               {{ else }}
@@ -510,6 +530,9 @@
               <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
                  class="service-uptime service-uptime--{{ .UptimeClass }}"
                  title="30-day uptime">{{ .Uptime }} ↗</a>
+              {{ else if .Unknown }}
+              <span class="service-uptime service-uptime--unknown"
+                    title="Status unknown: gatus returned no data for this service">unknown</span>
               {{ end }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
                 {{ .Product }}
@@ -526,8 +549,8 @@
 
       <footer class="footer">
         Generated {{ .GeneratedAt }} ·
-        <a href="https://uptime-cloud.{{ .Domain }}" target="_blank" rel="noopener">uptime</a>
-        · <a href="?refresh=1">refresh</a>
+        {{ if .UptimeURL }}<a href="{{ .UptimeURL | safeURL }}" target="_blank" rel="noopener">uptime</a> ·{{ end }}
+        <a href="?refresh=1">refresh</a>
       </footer>
     </div>
 

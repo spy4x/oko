@@ -31,6 +31,63 @@ func TestParseHealthRed(t *testing.T) {
 	}
 }
 
+// gatusHealthBadge mirrors generateHealthBadgeSVG in gatus's api/badge.go.
+func gatusHealthBadge(fill, status string) string {
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="92" height="20">
+  <g mask="url(#a)">
+    <path fill="#555" d="M0 0h48v20H0z"/>
+    <path fill="` + fill + `" d="M48 0h44v20H48z"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-size="11">
+    <text x="24" y="15" fill="#010101" fill-opacity=".3">
+      health
+    </text>
+    <text x="24" y="14">
+      health
+    </text>
+    <text x="70" y="15" fill="#010101" fill-opacity=".3">
+      ` + status + `
+    </text>
+    <text x="70" y="14">
+      ` + status + `
+    </text>
+  </g>
+</svg>`
+}
+
+// Real gatus badges: "down" is painted #c7130a, not #e05d44, so the
+// text has to decide.
+func TestParseHealthGatusBadges(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    bool
+		unknown bool
+	}{
+		{"up", gatusHealthBadge("#40cc11", "up"), true, false},
+		{"down", gatusHealthBadge("#c7130a", "down"), false, false},
+		{"no results yet", gatusHealthBadge("#ccb311", "?"), false, true},
+		{"fill only, current red", `<svg><path fill="#c7130a"/></svg>`, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseHealth(tc.body)
+			if tc.unknown {
+				if err == nil {
+					t.Fatalf("want unknown, got %v", *got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if *got != tc.want {
+				t.Errorf("got %v, want %v", *got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseHealthUnknown(t *testing.T) {
 	b := `<svg><path fill="#abcdef"/></svg>`
 	got, err := parseHealth(b)

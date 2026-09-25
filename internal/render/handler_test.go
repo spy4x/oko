@@ -591,3 +591,112 @@ func newHandlerForTestWithTemplate(
 	}
 	return h, cfg
 }
+
+// newHandlerWithProductionTemplate renders the real web/template.html so
+// template changes are covered, not only the test mirrors above.
+func newHandlerWithProductionTemplate(
+	t *testing.T,
+	configJSON string,
+	statusFn func(keys []string) map[string]gatus.Status,
+) (http.Handler, *config.Config) {
+	t.Helper()
+	cfg, _ := writeConfig(t, configJSON)
+	c := cache.New(time.Hour, func(_ context.Context, keys []string) (map[string]gatus.Status, error) {
+		if statusFn == nil {
+			return map[string]gatus.Status{}, nil
+		}
+		return statusFn(keys), nil
+	})
+	t.Cleanup(c.Stop)
+	h, err := NewHandler(c, cfg, filepath.Join("..", "..", "web", "template.html"),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h, cfg
+}
+
+// A section whose badges fail to load must not read "healthy" (issue #11).
+func TestBuildPage_NoDataIsUnknownNotHealthy(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "u", "endpoint": "home_a", "gatus_host": "uptime-cloud" },
+	    { "name": "B", "url": "u", "endpoint": "home_b", "gatus_host": "uptime-cloud" },
+	    { "name": "C", "url": "u" }
+	  ]}]
+	}`
+	h, _ := newHandlerWithProductionTemplate(t, cfgJSON, func(keys []string) map[string]gatus.Status {
+		healthy := true
+		// home_b is missing: its fetch failed.
+		return map[string]gatus.Status{"uptime-cloud|home_a": {Healthy: &healthy}}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+
+	// C has no gatus configured, so it is not "unknown"; it stays healthy.
+	if !strings.Contains(body, "2/3 healthy · 1 unknown") {
+		t.Errorf("expected '2/3 healthy · 1 unknown'; body:\n%s", body)
+	}
+	for _, want := range []string{
+		`class="pill pill-unknown"`,
+		`class="service service--unknown" data-endpoint="uptime-cloud|home_b"`,
+		`service-uptime--unknown`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in body", want)
+		}
+	}
+	for _, bad := range []string{"pill-healthy", "pill-degraded", "service--down"} {
+		if strings.Contains(body, `class="pill `+bad) || strings.Contains(body, `class="service `+bad) {
+			t.Errorf("unexpected %q in body", bad)
+		}
+	}
+}
+
+// A section with nothing but known-healthy services keeps the green pill
+// and no "unknown" suffix; one with a down service stays red even when
+// another service is unknown.
+func TestBuildPage_CounterPillStates(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [
+	    { "name": "Good", "services": [
+	      { "name": "A", "url": "u", "endpoint": "a", "gatus_host": "uptime-cloud" }
+	    ]},
+	    { "name": "Bad", "services": [
+	      { "name": "B", "url": "u", "endpoint": "b", "gatus_host": "uptime-cloud" },
+	      { "name": "C", "url": "u", "endpoint": "c", "gatus_host": "uptime-cloud" }
+	    ]}
+	  ]
+	}`
+	h, _ := newHandlerWithProductionTemplate(t, cfgJSON, func(keys []string) map[string]gatus.Status {
+		up, down := true, false
+		return map[string]gatus.Status{
+			"uptime-cloud|a": {Healthy: &up},
+			"uptime-cloud|b": {Healthy: &down},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+	good, bad, _ := strings.Cut(body, `data-section="Bad"`)
+	if !strings.Contains(good, `pill pill-healthy`) || !strings.Contains(good, "1/1 healthy") ||
+		strings.Contains(good, "healthy · ") {
+		t.Errorf("Good section should be plain healthy; got:\n%s", good)
+	}
+	if !strings.Contains(bad, `pill pill-degraded`) || !strings.Contains(bad, "0/2 healthy · 1 unknown") {
+		t.Errorf("Bad section should be degraded with 1 unknown; got:\n%s", bad)
+	}
+}
+
+// The footer's uptime link points at the configured gatus host, not a
+// hardcoded "uptime-cloud.<DOMAIN>".
+func TestBuildPage_FooterUptimeLinkFromConfig(t *testing.T) {
+	h, cfg := newHandlerWithProductionTemplate(t, `{"servers":[{"name":"S","services":[{"name":"A","url":"u"}]}]}`, nil)
+	cfg.UptimeHosts = []string{"status.example.org"}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if !strings.Contains(w.Body.String(), `href="https://status.example.org"`) {
+		t.Errorf("expected footer link to the first UPTIME_HOSTS entry; body:\n%s", w.Body.String())
+	}
+}

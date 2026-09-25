@@ -30,7 +30,7 @@ COPY --from=build /src/config.example.json /app/config.json
 
 WORKDIR /app
 
-ENV OKO_PORT=8080
+ENV PORT=8080
 EXPOSE 8080
 
 # Self-probe: binary connects to its own listening socket.

@@ -4,10 +4,16 @@
 // If expired or empty, the first caller blocks on the fetch; concurrent
 // callers block on the same fetch (single-flight). A background ticker
 // re-fetches every TTL to keep the cache warm even with zero traffic.
+//
+// The cache remembers the key set it was last asked for. The ticker
+// re-fetches that whole set, so a key whose fetch failed once is
+// retried on the next tick, and a changed set (catalog edited) makes
+// the snapshot stale at once.
 package cache
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,6 +31,7 @@ type Cache struct {
 	fetch  Fetcher
 	mu     sync.Mutex
 	data   map[string]gatus.Status
+	keys   []string // sorted; the set the snapshot was fetched for
 	expiry time.Time
 
 	flight sync.Mutex // single-flight: at most one fetch in-flight at a time
@@ -52,7 +59,8 @@ func New(ttl time.Duration, fetch Fetcher) *Cache {
 //
 // The returned map is a copy; callers may mutate it freely.
 func (c *Cache) Get(ctx context.Context, keys []string) (map[string]gatus.Status, error) {
-	if c.fresh() {
+	keys = sortedCopy(keys)
+	if c.fresh(keys) {
 		return c.snapshot(), nil
 	}
 
@@ -61,7 +69,7 @@ func (c *Cache) Get(ctx context.Context, keys []string) (map[string]gatus.Status
 
 	// Re-check after acquiring the lock — a concurrent caller may have
 	// just refreshed.
-	if c.fresh() {
+	if c.fresh(keys) {
 		return c.snapshot(), nil
 	}
 
@@ -69,7 +77,7 @@ func (c *Cache) Get(ctx context.Context, keys []string) (map[string]gatus.Status
 	if err != nil {
 		return nil, err
 	}
-	c.store(data)
+	c.store(keys, data)
 	return c.snapshot(), nil
 }
 
@@ -79,6 +87,7 @@ func (c *Cache) Get(ctx context.Context, keys []string) (map[string]gatus.Status
 // in-flight fetch. The cache is updated with the result whether the call
 // originated here or from the background ticker.
 func (c *Cache) Refresh(ctx context.Context, keys []string) error {
+	keys = sortedCopy(keys)
 	c.flight.Lock()
 	defer c.flight.Unlock()
 
@@ -86,7 +95,7 @@ func (c *Cache) Refresh(ctx context.Context, keys []string) error {
 	if err != nil {
 		return err
 	}
-	c.store(data)
+	c.store(keys, data)
 	return nil
 }
 
@@ -95,10 +104,11 @@ func (c *Cache) Stop() {
 	c.once.Do(func() { close(c.stop) })
 }
 
-func (c *Cache) fresh() bool {
+func (c *Cache) fresh(keys []string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return !c.expiry.IsZero() && time.Now().Before(c.expiry) && len(c.data) > 0
+	return !c.expiry.IsZero() && time.Now().Before(c.expiry) && len(c.data) > 0 &&
+		slices.Equal(keys, c.keys)
 }
 
 func (c *Cache) snapshot() map[string]gatus.Status {
@@ -111,16 +121,26 @@ func (c *Cache) snapshot() map[string]gatus.Status {
 	return out
 }
 
-func (c *Cache) store(data map[string]gatus.Status) {
+// store saves a snapshot. keys must already be sorted.
+func (c *Cache) store(keys []string, data map[string]gatus.Status) {
 	c.mu.Lock()
 	c.data = data
+	c.keys = keys
 	c.expiry = time.Now().Add(c.ttl)
 	c.mu.Unlock()
 }
 
+func sortedCopy(keys []string) []string {
+	out := slices.Clone(keys)
+	slices.Sort(out)
+	return out
+}
+
 // refreshLoop re-fetches on every tick to keep the cache warm even if no
-// one is hitting the page. Uses a 10s hard timeout per tick to bound
-// fetch hang time.
+// one is hitting the page. It fetches the last requested key set, not
+// the keys present in the snapshot: those are only the ones that
+// succeeded, so a key that failed once would never be tried again.
+// Uses a 10s hard timeout per tick to bound fetch hang time.
 func (c *Cache) refreshLoop() {
 	t := time.NewTicker(c.ttl)
 	defer t.Stop()
@@ -130,21 +150,19 @@ func (c *Cache) refreshLoop() {
 			return
 		case <-t.C:
 			c.mu.Lock()
-			keys := make([]string, 0, len(c.data))
-			for k := range c.data {
-				keys = append(keys, k)
-			}
+			keys := c.keys
 			c.mu.Unlock()
 			if len(keys) == 0 {
 				continue
 			}
+			c.flight.Lock()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			data, err := c.fetch(ctx, keys)
 			cancel()
-			if err != nil {
-				continue // keep previous snapshot — better stale than empty
-			}
-			c.store(data)
+			if err == nil {
+				c.store(keys, data)
+			} // on error keep previous snapshot — better stale than empty
+			c.flight.Unlock()
 		}
 	}
 }

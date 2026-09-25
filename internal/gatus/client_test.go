@@ -68,6 +68,9 @@ func TestParseHealthGatusBadges(t *testing.T) {
 		{"down", gatusHealthBadge("#c7130a", "down"), false, false},
 		{"no results yet", gatusHealthBadge("#ccb311", "?"), false, true},
 		{"fill only, current red", `<svg><path fill="#c7130a"/></svg>`, false, false},
+		// The text wins when it disagrees with the fill.
+		{"text down on green fill", gatusHealthBadge("#40cc11", "down"), false, false},
+		{"text up on unknown fill", gatusHealthBadge("#123456", "up"), true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

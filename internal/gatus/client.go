@@ -67,7 +67,6 @@ func NewClient(fqdns []string, hostTimeout time.Duration) *Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.MaxIdleConns = 256
 	tr.MaxIdleConnsPerHost = 128
-	tr.MaxConnsPerHost = 32
 	return &Client{
 		hosts:   hosts,
 		http:    &http.Client{Timeout: hostTimeout, Transport: tr},

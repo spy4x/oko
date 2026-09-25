@@ -104,11 +104,13 @@ func (c *Cache) Stop() {
 	c.once.Do(func() { close(c.stop) })
 }
 
+// fresh reports whether the snapshot can be served for keys. An empty
+// snapshot (every lookup failed) is fresh too: the ticker retries it, and
+// refetching per request would make each visitor wait out the timeout.
 func (c *Cache) fresh(keys []string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return !c.expiry.IsZero() && time.Now().Before(c.expiry) && len(c.data) > 0 &&
-		slices.Equal(keys, c.keys)
+	return !c.expiry.IsZero() && time.Now().Before(c.expiry) && slices.Equal(keys, c.keys)
 }
 
 func (c *Cache) snapshot() map[string]gatus.Status {

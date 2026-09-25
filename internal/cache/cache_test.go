@@ -203,4 +203,26 @@ func TestCache_NewKeysBypassFreshSnapshot(t *testing.T) {
 	}
 }
 
+// When gatus is unreachable every lookup fails and the snapshot is empty.
+// That result is cached like any other, so visitors don't each wait out
+// a full fetch timeout; the ticker retries in the background.
+func TestCache_EmptyResultIsCached(t *testing.T) {
+	var hits int32
+	c := New(time.Hour, func(_ context.Context, _ []string) (map[string]gatus.Status, error) {
+		atomic.AddInt32(&hits, 1)
+		return map[string]gatus.Status{}, nil
+	})
+	defer c.Stop()
+
+	keys := []string{"h|a"}
+	for i := 0; i < 3; i++ {
+		if _, err := c.Get(t.Context(), keys); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Errorf("hits=%d, want 1", n)
+	}
+}
+
 func ptrBool(b bool) *bool { return &b }

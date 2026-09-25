@@ -27,13 +27,15 @@ gatus instances, and you're done.
   (mtime-cached). Edit the file → next request picks it up.
 - **Gatus integration.** For each service that has `endpoint` +
   `gatus_host` set, Oko fetches two badge SVGs in parallel and
-  parses the fill colour (`#40cc11` / `#e05d44`) and the 30-day
-  uptime percentage from the `<text>` element. The result is cached
+  parses the health text (`up` / `down`) and the 30-day uptime
+  percentage from the `<text>` elements. The result is cached
   for `CACHE_TTL_SECS` (default 60s) with single-flight so a burst
   of requests only triggers one upstream fetch.
-- **Unknown ≠ down.** A failed gatus fetch renders the service as
-  healthy (no red border) but with no uptime number. Failed upstream
-  is not the same as failed service.
+- **Unknown ≠ down, and unknown ≠ healthy.** When gatus gives no
+  answer for a service, the card gets a dashed "unknown" marker
+  instead of a red border, and the section counter reports it
+  separately ("18/22 healthy · 4 unknown"). Failed upstream is not
+  the same as failed service.
 - **`?refresh=1`** bypasses the cache for one request — the next
   request still hits the warm cache, but the forced refetch happens
   synchronously, blocking the caller until done.
@@ -145,16 +147,18 @@ For each service with `endpoint` + `gatus_host` set, Oko fans out two
 GETs in parallel:
 
 - `https://<gatus>/api/v1/endpoints/<endpoint>/health/badge.svg` —
-  fill colour: `#40cc11` (up) or `#e05d44` (down). Anything else →
-  unknown → render as healthy.
+  value text `up` or `down`; if the text is missing, the fill colour
+  (`#40cc11` up, `#c7130a` or `#e05d44` down). `?` or anything else →
+  unknown.
 - `https://<gatus>/api/v1/endpoints/<endpoint>/uptimes/30d/badge.svg`
   — 30-day uptime percentage parsed from the `<text>` element via the
   regex `>\s*([\d.]+)%\s*<`. No match → unknown → omit the uptime
   pill.
 
-A failed fetch leaves the service as **unknown** — rendered as
-healthy but with no uptime number. Unknown is not down; it usually
-means gatus itself or the network is broken.
+A failed fetch leaves the service as **unknown**: no red border, a
+dashed "unknown" marker, and not counted as healthy. Unknown is not
+down; it usually means gatus itself or the network is broken. The
+background refresh retries unknown services every `CACHE_TTL_SECS`.
 
 These rules mirror gatus's default badge SVGs. If gatus changes its
 colours or text format, `internal/gatus/client.go` needs updating.

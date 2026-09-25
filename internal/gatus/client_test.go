@@ -1,6 +1,7 @@
 package gatus
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,66 @@ func TestParseHealthRed(t *testing.T) {
 	}
 	if got == nil || *got != false {
 		t.Errorf("got %v, want false", got)
+	}
+}
+
+// gatusHealthBadge mirrors generateHealthBadgeSVG in gatus's api/badge.go.
+func gatusHealthBadge(fill, status string) string {
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="92" height="20">
+  <g mask="url(#a)">
+    <path fill="#555" d="M0 0h48v20H0z"/>
+    <path fill="` + fill + `" d="M48 0h44v20H48z"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-size="11">
+    <text x="24" y="15" fill="#010101" fill-opacity=".3">
+      health
+    </text>
+    <text x="24" y="14">
+      health
+    </text>
+    <text x="70" y="15" fill="#010101" fill-opacity=".3">
+      ` + status + `
+    </text>
+    <text x="70" y="14">
+      ` + status + `
+    </text>
+  </g>
+</svg>`
+}
+
+// Real gatus badges: "down" is painted #c7130a, not #e05d44, so the
+// text has to decide.
+func TestParseHealthGatusBadges(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    bool
+		unknown bool
+	}{
+		{"up", gatusHealthBadge("#40cc11", "up"), true, false},
+		{"down", gatusHealthBadge("#c7130a", "down"), false, false},
+		{"no results yet", gatusHealthBadge("#ccb311", "?"), false, true},
+		{"fill only, current red", `<svg><path fill="#c7130a"/></svg>`, false, false},
+		// The text wins when it disagrees with the fill.
+		{"text down on green fill", gatusHealthBadge("#40cc11", "down"), false, false},
+		{"text up on unknown fill", gatusHealthBadge("#123456", "up"), true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseHealth(tc.body)
+			if tc.unknown {
+				if err == nil {
+					t.Fatalf("want unknown, got %v", *got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if *got != tc.want {
+				t.Errorf("got %v, want %v", *got, tc.want)
+			}
+		})
 	}
 }
 
@@ -226,6 +287,31 @@ func TestFetchAll_BothFailed_KeyAbsent(t *testing.T) {
 	}
 	if _, ok := out[short+"|home_a"]; ok {
 		t.Error("expected key absent when both badges failed")
+	}
+}
+
+// A request abandoned mid-fetch must not look like "gatus had no data":
+// the cache would store the empty map and every visitor would see
+// "unknown" until the TTL ran out.
+func TestFetchAll_CancelledContextReturnsError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+		_, _ = w.Write([]byte(gatusHealthBadge("#40cc11", "up")))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+	short := host[:strings.Index(host, ".")]
+	c := NewClient([]string{host}, 2*time.Second)
+	c.SetHTTPClient(srv.Client())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	out, err := c.FetchAll(ctx, []string{short + "|home_a"})
+	if err == nil {
+		t.Fatalf("want context error, got nil and %d entries", len(out))
 	}
 }
 

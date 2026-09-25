@@ -48,8 +48,11 @@ func main() {
 	}
 }
 
+// runHealthcheck dials the port the server listens on. It must read
+// the same PORT variable as config.Load, or a custom PORT makes the
+// container report unhealthy while it serves fine.
 func runHealthcheck(logger *slog.Logger) int {
-	port := os.Getenv("OKO_PORT")
+	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
@@ -71,9 +74,8 @@ func run(logger *slog.Logger) error {
 
 	// Validate the catalog eagerly at startup so a bad config file
 	// surfaces in logs instead of waiting for the first GET.
-	if fc, ferr := cfg.File(); ferr != nil {
+	if _, ferr := cfg.File(); ferr != nil {
 		logger.Warn("initial config load failed (will retry on first request)", slog.Any("err", ferr))
-		_ = fc
 	}
 
 	gc := gatus.NewClient(cfg.UptimeHosts, cfg.UptimeTimeout)

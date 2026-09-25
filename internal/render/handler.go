@@ -40,6 +40,7 @@ type PageData struct {
 	Title       string
 	Subtitle    string
 	Domain      string
+	UptimeURL   string // first gatus instance, for the footer link; "" hides it
 	GeneratedAt string
 	Sections    []SectionView
 }
@@ -47,16 +48,19 @@ type PageData struct {
 // SectionView is one rendered group on the page (Home, Cloud, ...).
 type SectionView struct {
 	Name        string
-	Counter     string // "23/24 healthy"
+	Counter     string // "23/24 healthy", or "18/22 healthy · 4 unknown"
 	Uptime      string // "99.95% · 30d" or "—"
 	UptimeClass string // CSS modifier for the section pill: "good"/"ok"/"warn"/"bad"/""
-	AllGood     bool
+	AllGood     bool   // every service healthy, none unknown
+	Degraded    bool   // at least one service is down
 	Services    []ServiceView
 }
 
 // ServiceView is one card. Healthy is the user-facing state: unknown is
 // treated as true (no red border). Down is the strict state: only true
-// when gatus explicitly reports false.
+// when gatus explicitly reports false. Unknown is set when the service
+// has gatus configured but gatus gave no health answer; it is shown as
+// "unknown" and never counted as healthy in the section counter.
 type ServiceView struct {
 	Name        string
 	Product     string
@@ -66,6 +70,7 @@ type ServiceView struct {
 	Description string
 	Healthy     bool
 	Down        bool
+	Unknown     bool
 	Uptime      string // formatted "99.95%" or ""
 	UptimeClass string // CSS modifier for the pill: "good"/"ok"/"warn"/"bad"/""
 	DetailURL   string // gatus per-endpoint detail page (set when fetch ok)
@@ -107,6 +112,9 @@ func NewHandler(c *cache.Cache, cfg *config.Config, templatePath string, logger 
 		}
 
 		data := buildPage(cfg.Domain, file, status)
+		if len(cfg.UptimeHosts) > 0 {
+			data.UptimeURL = "https://" + cfg.UptimeHosts[0]
+		}
 
 		var buf bytes.Buffer
 		if err := parsed.ExecuteTemplate(&buf, tmplName, data); err != nil {
@@ -142,9 +150,10 @@ func fetchStatuses(ctx context.Context, c *cache.Cache, keys []string, force boo
 // Sections are rendered in the order they appear in the catalog (which
 // matches the JSON array order — operators control it directly).
 //
-// Per-section Counter shows "healthy/total". Per-section Uptime shows
-// the max 30-day uptime across that section's services with known
-// numbers — useful signal: "all services here are at least 99.5%".
+// Per-section Counter shows "healthy/total", plus the unknown count when
+// there is one: a service gatus gave no answer for is not healthy.
+// Per-section Uptime shows the max 30-day uptime across that section's
+// services with known numbers, i.e. the best service, not the worst.
 func buildPage(domain string, file config.FileConfig, status map[string]gatus.Status) PageData {
 	title := file.Title
 	if title == "" {
@@ -160,7 +169,7 @@ func buildPage(domain string, file config.FileConfig, status map[string]gatus.St
 
 	for _, server := range file.Servers {
 		var sec SectionView
-		healthy := 0
+		healthy, unknown := 0, 0
 		var maxUptime float64
 		haveUptime := false
 
@@ -175,7 +184,12 @@ func buildPage(domain string, file config.FileConfig, status map[string]gatus.St
 			sv := serviceViewFrom(svc, domain, st)
 			sec.Services = append(sec.Services, sv)
 
-			if sv.Healthy {
+			switch {
+			case sv.Unknown:
+				unknown++
+			case sv.Down:
+				sec.Degraded = true
+			default:
 				healthy++
 			}
 			if st.Uptime != nil {
@@ -193,6 +207,9 @@ func buildPage(domain string, file config.FileConfig, status map[string]gatus.St
 		total := len(sec.Services)
 		sec.Name = server.Name
 		sec.Counter = fmt.Sprintf("%d/%d healthy", healthy, total)
+		if unknown > 0 {
+			sec.Counter += fmt.Sprintf(" · %d unknown", unknown)
+		}
 		sec.AllGood = healthy == total
 		if haveUptime {
 			sec.Uptime = fmt.Sprintf("%.2f%% · 30d", maxUptime)
@@ -239,6 +256,8 @@ func serviceViewFrom(s config.Service, domain string, st gatus.Status) ServiceVi
 	if st.Healthy != nil {
 		sv.Down = !*st.Healthy
 		sv.Healthy = *st.Healthy
+	} else if s.HasGatus() {
+		sv.Unknown = true
 	}
 	if st.Uptime != nil {
 		sv.Uptime = fmt.Sprintf("%.2f%%", *st.Uptime)

@@ -1,6 +1,7 @@
 package gatus
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -286,6 +287,31 @@ func TestFetchAll_BothFailed_KeyAbsent(t *testing.T) {
 	}
 	if _, ok := out[short+"|home_a"]; ok {
 		t.Error("expected key absent when both badges failed")
+	}
+}
+
+// A request abandoned mid-fetch must not look like "gatus had no data":
+// the cache would store the empty map and every visitor would see
+// "unknown" until the TTL ran out.
+func TestFetchAll_CancelledContextReturnsError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+		_, _ = w.Write([]byte(gatusHealthBadge("#40cc11", "up")))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+	short := host[:strings.Index(host, ".")]
+	c := NewClient([]string{host}, 2*time.Second)
+	c.SetHTTPClient(srv.Client())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	out, err := c.FetchAll(ctx, []string{short + "|home_a"})
+	if err == nil {
+		t.Fatalf("want context error, got nil and %d entries", len(out))
 	}
 }
 

@@ -98,7 +98,10 @@ var (
 // from the result map; callers should treat absent == unknown.
 //
 // The whole fan-out shares one parent context — pass a request-scoped
-// context for cancellation.
+// context for cancellation. If that context ends before the fan-out
+// finishes, FetchAll returns its error instead of a map, so a caller
+// that caches results does not store "every lookup failed" for what was
+// really an abandoned request.
 func (c *Client) FetchAll(ctx context.Context, keys []string) (map[string]Status, error) {
 	if len(keys) == 0 {
 		return map[string]Status{}, nil
@@ -140,6 +143,9 @@ func (c *Client) FetchAll(ctx context.Context, keys []string) (map[string]Status
 	}
 	wg.Wait()
 	close(out)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	m := make(map[string]Status, len(work))
 	for r := range out {

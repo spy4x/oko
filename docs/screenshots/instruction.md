@@ -120,5 +120,5 @@ in the committed sequence: 29 good / 5 transition / 2 bad out of 36 total.
   real dashboard state.
 - Source PNGs (`_full-desktop.png`, `_full-mobile.png`) are intentionally not
   tracked — only the final `dashboard.webp` is committed.
-- README insertion: one line under the ASCII flow diagram,
+- README insertion: one line inside the centred header, under the links,
   `![Oko dashboard — desktop and mobile views](docs/screenshots/dashboard.webp)`.

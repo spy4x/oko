@@ -1,109 +1,80 @@
-# Oko
+<div align="center">
 
-[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fspy4x%2Foko-blue)](https://github.com/spy4x/oko/pkgs/container/oko)
-[![Go](https://img.shields.io/badge/go-1.25-00ADD8?logo=go)](https://go.dev)
+# oko 👁
+
+**One page for every self-hosted service, with its status and 30-day uptime from gatus.**
+
+[![CI](https://ci.antonshubin.com/api/badges/7/status.svg)](https://ci.antonshubin.com/repos/7)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fspy4x%2Foko-blue?logo=docker)](https://github.com/users/spy4x/packages/container/package/oko)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![CI](https://img.shields.io/badge/CI-woodpecker-blue)](https://github.com/spy4x/oko)
 
-A single-page server-rendered dashboard for any self-hosted homelab.
-**Oko** (Russian: око — "eye") fans out gatus badge SVGs in parallel
-behind a 60-second in-memory single-flight cache, renders one HTML
-page listing every service with its current status and 30-day uptime.
-Drop a JSON catalog at `/app/config.json`, point the env vars at your
-gatus instances, and you're done.
+[**Live dashboard →**](https://dash.antonshubin.com/) ·
+[Self-hosting](docs/self-hosting.md) · [Configuration](docs/configuration.md) ·
+[How it works](docs/how-it-works.md)
 
-**Live example:** [https://dash.antonshubin.com/](https://dash.antonshubin.com/)
+![The oko dashboard on desktop and phone: a search box, then a "Home" section with a healthy counter and a 30-day uptime pill, then a grid of service cards, each with an icon, a name, a one-line description and its own uptime percentage.](docs/screenshots/dashboard.webp)
 
-![Oko dashboard — desktop and mobile views](docs/screenshots/dashboard.webp)
+</div>
 
-## Features
+You list your services in one JSON file. oko renders them as one searchable
+page, and for each service that [gatus](https://github.com/TwiN/gatus) watches,
+it shows whether it is up and its uptime over the last 30 days. **oko** (око,
+Russian for "eye") is the page you open to find a service and see at a glance
+that everything is fine.
 
-- **Single binary, no runtime deps.** Pure Go stdlib: `net/http`,
-  `log/slog`, `html/template`, `context`, `sync`, `time`.
-- **Server-rendered.** One request → one HTML page. No client-side
-  framework; the only JS is a ~30-line search filter.
-- **JSON catalog.** Mount any `config.json` at `/app/config.json`. The
-  file is re-read on every request only if its `mtime` has changed
-  (mtime-cached). Edit the file → next request picks it up.
-- **Gatus integration.** For each service that has `endpoint` +
-  `gatus_host` set, Oko fetches two badge SVGs in parallel and
-  parses the health text (`up` / `down`) and the 30-day uptime
-  percentage from the `<text>` elements. The result is cached
-  for `CACHE_TTL_SECS` (default 60s) with single-flight so a burst
-  of requests only triggers one upstream fetch.
-- **Unknown ≠ down, and unknown ≠ healthy.** When gatus gives no
-  answer for a service, the card gets a dashed "unknown" marker
-  instead of a red border, and the section counter reports it
-  separately ("18/22 healthy · 4 unknown"). Failed upstream is not
-  the same as failed service.
-- **`?refresh=1`** bypasses the cache for one request — the next
-  request still hits the warm cache, but the forced refetch happens
-  synchronously, blocking the caller until done.
-- **Distroless runtime.** ~10 MB image, nonroot, no shell, no
-  package manager. Healthcheck uses the binary's own `-healthcheck`
-  flag (TCP probe of its own listening socket).
+I built it for my own servers and run it at
+[dash.antonshubin.com](https://dash.antonshubin.com/).
 
-## What Oko is NOT
+## Why oko
 
-- **Not a status page generator.** Oko renders a single dashboard
-  for one homelab. For a public status page use
-  [BetterStack](https://betterstack.com/uptime) or similar.
-- **Not a metrics dashboard.** Oko reads gatus badges, not
-  Prometheus / InfluxDB. For metrics use
-  [Grafana](https://grafana.com/).
-- **Not a gatus replacement.** Oko complements gatus — it assumes you
-  already have [gatus](https://github.com/TwiN/gatus) running and
-  configured with endpoints you want displayed.
-- **Not a service discovery / health-check tool.** Oko never probes
-  services itself. It reads the gatus-emitted SVG and displays it.
-  Probe at the source (gatus), display at the dashboard (oko).
-- **Not multi-tenant.** One process serves one dashboard. Run multiple
-  instances for multiple dashboards.
-- **Not a SaaS.** No auth, no rate limiting (rely on your reverse
-  proxy), no telemetry, no updates channel.
+- **One page, every service.** Grouped by server, searchable, with `/` to focus
+  the search and `Esc` to clear it.
+- **Status you can trust.** Up, down and 30-day uptime come from gatus. When
+  gatus does not answer, the service shows "unknown", never a false green or
+  red.
+- **Edit a file, not a UI.** Change `config.json` and the next page load shows
+  it. No restart, no database, no accounts.
+- **Plain HTML.** The server renders the whole page; the only JavaScript is the
+  search filter. No client framework, no build step.
+- **Fast under load.** Badge fetches run in parallel and are cached in memory
+  for 60 seconds by default, so a burst of visitors costs gatus one round of
+  requests.
+- **Tiny to run.** A static Go binary with no dependencies beyond the standard
+  library, in an 11 MB distroless image that runs as non-root.
+
+**Use it if** you run gatus and want one friendly page for your self-hosted
+services. **Skip it if** you need a public status page, metrics graphs, or a
+tool that probes services itself: see
+[what oko is not](docs/how-it-works.md#what-oko-is-not).
 
 ## Quick start
 
-```bash
-# 1. Create a config
-cp config.example.json config.json
-$EDITOR config.json
-
-# 2. Run with the right env vars
-docker run --rm -p 8080:8080 \
-  -e DOMAIN=example.com \
-  -e UPTIME_HOSTS=uptime-cloud.example.com,uptime-home.example.com \
-  -v "$PWD/config.json:/app/config.json:ro" \
-  ghcr.io/spy4x/oko:latest
+```yaml
+# compose.yml
+services:
+  oko:
+    image: ghcr.io/spy4x/oko:latest
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    environment:
+      DOMAIN: example.com                # replaces ${DOMAIN} in service URLs
+      UPTIME_HOSTS: uptime.example.com   # your gatus host(s), comma-separated
+    volumes: ["./config.json:/app/config.json:ro,z"]
 ```
-
-Open http://localhost:8080.
-
-For docker-compose or Kubernetes, the same env vars + a mounted
-config.json are all you need. See the [homelab
-recipe](https://github.com/spy4x/homelab) for an example.
-
-## Configuration
-
-### `config.json` — the catalog
 
 ```json
 {
-  "title": "Service dashboard",
-  "subtitle": "Single page for every self-hosted service — search, jump, check status",
+  "title": "Jane Doe's servers",
   "servers": [
     {
       "name": "Home",
       "services": [
         {
-          "name":         "Audiobooks",
-          "url":          "https://books.${DOMAIN}",
-          "icon":         "📚",
-          "description":  "Audiobook and podcast library with streaming",
-          "product":      "Audiobookshelf",
-          "product_url":  "https://www.audiobookshelf.org/",
-          "endpoint":     "home_audiobookshelf",
-          "gatus_host":   "uptime-cloud"
+          "name": "Photos",
+          "url": "https://photos.${DOMAIN}",
+          "icon": "📷",
+          "endpoint": "home_photos",
+          "gatus_host": "uptime"
         }
       ]
     }
@@ -111,107 +82,37 @@ recipe](https://github.com/spy4x/homelab) for an example.
 }
 ```
 
-**Required**: `servers[].name`, `servers[].services[].name`,
-`servers[].services[].url`.
+Save the second block as `config.json`, run `docker compose up -d` and open
+`http://localhost:8080`. `endpoint` is the gatus endpoint's key, and
+`gatus_host` is the first label of a host in `UPTIME_HOSTS`.
 
-**Optional**: everything else. The `icon` field accepts any emoji or
-short text. The `product` + `product_url` pair is shown as a small
-attribution line below the description. The `endpoint` + `gatus_host`
-pair is the gatus lookup: if either is missing, the service always
-renders as healthy (no status pill). `hidden: true` skips rendering
-the card but still runs the gatus fetch — useful when phasing out
-a service.
+## Configuration
 
-**`${DOMAIN}` substitution**: in `url`, the literal token `${DOMAIN}`
-is replaced at render time with the `DOMAIN` env var. No other env
-vars are interpolated.
+Required: `DOMAIN`, `UPTIME_HOSTS`, and in `config.json` each server's `name`
+and each service's `name` and `url`. Ports, timeouts, cache length, file paths
+and the optional card fields are in [configuration.md](docs/configuration.md).
+Reverse proxy, health check and `docker run`:
+[self-hosting.md](docs/self-hosting.md).
 
-**Render order** matches JSON array order, both for servers and for
-services within a server. Empty server groups are skipped.
-
-### Environment
-
-| Var                 | Default      | Description                                          |
-| ------------------- | ------------ | ---------------------------------------------------- |
-| `DOMAIN`            | *(required)* | Base domain (substituted into `${DOMAIN}`)           |
-| `UPTIME_HOSTS`      | *(required)* | Comma-separated gatus FQDNs                          |
-| `PORT`              | `8080`       | Listen port                                          |
-| `UPTIME_TIMEOUT_SECS` | `5`        | Per-fetch timeout                                    |
-| `CACHE_TTL_SECS`    | `60`         | In-memory cache TTL                                  |
-| `TEMPLATE_PATH`     | `/app/web/template.html` | Override template path                       |
-| `CONFIG_PATH`       | `/app/config.json`       | Override catalog path                        |
-
-### Health parsing
-
-For each service with `endpoint` + `gatus_host` set, Oko fans out two
-GETs in parallel:
-
-- `https://<gatus>/api/v1/endpoints/<endpoint>/health/badge.svg` —
-  value text `up` or `down`; if the text is missing, the fill colour
-  (`#40cc11` up, `#c7130a` or `#e05d44` down). `?` or anything else →
-  unknown.
-- `https://<gatus>/api/v1/endpoints/<endpoint>/uptimes/30d/badge.svg`
-  — 30-day uptime percentage parsed from the `<text>` element via the
-  regex `>\s*([\d.]+)%\s*<`. No match → unknown → omit the uptime
-  pill.
-
-A failed fetch leaves the service as **unknown**: no red border, a
-dashed "unknown" marker, and not counted as healthy. Unknown is not
-down; it usually means gatus itself or the network is broken. The
-background refresh retries unknown services every `CACHE_TTL_SECS`.
-
-These rules mirror gatus's default badge SVGs. If gatus changes its
-colours or text format, `internal/gatus/client.go` needs updating.
-
-## Local development
+## Development
 
 ```bash
 go test ./...
-DOMAIN=example.com UPTIME_HOSTS=uptime-cloud.example.com \
-  go run ./cmd/oko
+DOMAIN=example.com UPTIME_HOSTS=uptime.example.com CONFIG_PATH=config.example.json \
+  TEMPLATE_PATH=web/template.html go run ./cmd/oko
 ```
 
-Tests use `httptest` for mocking gatus responses and `t.TempDir()`
-for catalog fixtures.
+More in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Deployment
+## Built by
 
-### Docker
+I'm [Anton Shubin](https://antonshubin.com), a senior full-stack engineer and
+tech lead. oko is one of the small tools I build and run on my own servers. Need
+something like it built for your product?
+[That's my day job →](https://antonshubin.com)
 
-The included `Dockerfile` is a multi-stage build:
+Licensed under [MIT](LICENSE).
 
-- `golang:1.25-alpine` — build stage
-- `gcr.io/distroless/static-debian12:nonroot` — runtime (~10 MB)
+---
 
-The image's `HEALTHCHECK` uses the binary's own `-healthcheck` flag
-(opens a TCP probe to its own listening socket). distroless-static
-has no shell, no wget — using the binary's flag avoids a heavier
-base image just for health.
-
-### Reverse proxy
-
-Put Oko behind any reverse proxy. Cache headers are deliberately
-short so health updates are timely. No special headers required.
-
-### Healthcheck
-
-```bash
-docker exec <container> /oko -healthcheck
-# exits 0 if the listening socket accepts a TCP connection
-```
-
-## Architecture
-
-```
-cmd/oko/main.go              — entrypoint, env load, server lifecycle
-internal/config/             — env config + JSON catalog loader (mtime cache)
-internal/cache/              — single-flight TTL cache with background refresh
-internal/gatus/              — fetch + parse gatus badge SVGs
-internal/render/             — HTTP handler, html/template wrapper
-web/template.html            — single template file, all UI in one
-config.example.json          — demo catalog (override via CONFIG_PATH mount)
-```
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+Made by Anton Shubin · [antonshubin.com/tools](https://antonshubin.com/tools)

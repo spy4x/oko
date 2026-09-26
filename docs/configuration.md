@@ -36,7 +36,8 @@ minimum.
 **Optional**: everything else. The `icon` field accepts any emoji or
 short text. The `product` + `product_url` pair is shown as a small
 attribution line below the description. The `endpoint` + `gatus_host`
-pair is the gatus lookup: if either is missing, the service always
+pair is the gatus lookup: set both or neither, because a catalog with
+only one of them is rejected. With neither, the service always
 renders as healthy (no status pill). `hidden: true` skips rendering
 the card but still runs the gatus fetch — useful when phasing out
 a service.

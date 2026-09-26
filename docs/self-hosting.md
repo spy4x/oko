@@ -4,21 +4,24 @@
 
 ```bash
 # 1. Create a config
-cp config.example.json config.json
-$EDITOR config.json
+mkdir -p oko && cp config.example.json oko/config.json
+$EDITOR oko/config.json
 
 # 2. Run with the right env vars
 docker run --rm -p 8080:8080 \
   -e DOMAIN=example.com \
   -e UPTIME_HOSTS=uptime-cloud.example.com,uptime-home.example.com \
-  -v "$PWD/config.json:/app/config.json:ro" \
+  -e CONFIG_PATH=/config/config.json \
+  -v "$PWD/oko:/config:ro,z" \
   ghcr.io/spy4x/oko:latest
 ```
 
 Open http://localhost:8080.
 
 For docker-compose or Kubernetes, the same env vars + a mounted
-config.json are all you need. See the [rostok
+config.json are all you need. Mount the folder, not the file: many
+editors save by replacing the file, and a single-file bind mount keeps
+showing the old one until the container restarts. See the [rostok
 recipe](https://github.com/spy4x/rostok/tree/main/stacks/oko) for an example.
 
 ## Docker image

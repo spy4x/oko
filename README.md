@@ -59,7 +59,8 @@ services:
     environment:
       DOMAIN: example.com                # replaces ${DOMAIN} in service URLs
       UPTIME_HOSTS: uptime.example.com   # your gatus host(s), comma-separated
-    volumes: ["./config.json:/app/config.json:ro,z"]
+      CONFIG_PATH: /config/config.json
+    volumes: ["./oko:/config:ro,z"]
 ```
 
 ```json
@@ -82,7 +83,7 @@ services:
 }
 ```
 
-Save the second block as `config.json`, run `docker compose up -d` and open
+Save the second block as `oko/config.json`, run `docker compose up -d` and open
 `http://localhost:8080`. `endpoint` is the gatus endpoint's key, and
 `gatus_host` is the first label of a host in `UPTIME_HOSTS`.
 

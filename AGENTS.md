@@ -6,8 +6,12 @@
 - **Runtime deps:** none (pure stdlib: `net/http`, `log/slog`, `html/template`, `context`, `sync`, `os/signal`, `strings`, `regexp`, `strconv`, `time`, `io`, `encoding/json`)
 - **Container:** distroless `static-debian12:nonroot` (~10 MB)
 - **CI:** Woodpecker, repository untrusted (no privileged mode, no host
-  volumes). Tests on `golang:1.25-alpine`; the image is built and pushed
-  with kaniko, never through the agent's Docker socket
+  volumes). Tests on `golang:1.25-alpine`; the image is built with kaniko,
+  never through the agent's Docker socket, in a step with no secrets. A
+  separate step pushes it with crane and is the only one that holds
+  `GHCR_PUSH_TOKEN`, because the Dockerfile's RUN lines run in kaniko's
+  container. `tag-guard` only prevents mistakes; it is not a security
+  boundary, since a tagged commit's own pipeline file can drop it
 
 ## Invariants
 

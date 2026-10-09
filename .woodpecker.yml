@@ -9,11 +9,23 @@
 #   image-build — pull requests only. Builds the image with kaniko and
 #                 pushes nothing, with no secrets: proof the Dockerfile
 #                 builds before it is merged.
-#   tag-guard   — tags only. Fails unless the tagged commit is on main,
-#                 so a tag on an unmerged commit cannot publish an image.
-#   publish     — push to main and tags. Builds with kaniko and pushes to
-#                 ghcr.io/spy4x/oko with the GHCR_PUSH_TOKEN secret, which
-#                 lives in Woodpecker (never in this file).
+#   tag-guard   — tags only. Fails unless the tagged commit is on main.
+#                 It prevents mistakes, such as tagging a commit that was
+#                 never merged; it is not a security boundary, because
+#                 Woodpecker runs the pipeline file of the tagged commit,
+#                 and that file can drop the guard.
+#   image       — push to main and tags. Builds the image with kaniko into
+#                 image.tar in the workspace. No secrets.
+#   push        — push to main and tags. Pushes image.tar to
+#                 ghcr.io/spy4x/oko with crane and the GHCR_PUSH_TOKEN
+#                 secret, which lives in Woodpecker (never in this file).
+#
+# Why the build and the push are two steps: kaniko runs the Dockerfile's
+# RUN lines inside its own container, so every build command and every
+# dependency it downloads could read a token that step holds, from the
+# registry login file or from the process environment. The step that
+# holds the token runs only crane, from a digest-pinned image, and no
+# code from this repository.
 #
 # Why kaniko: it builds an image from a Dockerfile entirely in user space
 # inside an ordinary container, with no Docker daemon and no privileges.
@@ -36,6 +48,10 @@
 # substitutes `$NAME` in this file before the step runs and blanks any
 # name it does not know, so a single `$` would erase the script's own
 # variables and the secret.
+#
+# No step uses `depends_on`: without it, steps run one after another in
+# file order and a failed step skips every later one. One `depends_on`
+# would switch the whole pipeline to parallel steps.
 
 when:
   event: [push, pull_request, tag]
@@ -84,19 +100,14 @@ steps:
     when:
       event: tag
 
-  publish:
-    # Runs after tag-guard: steps run in order and a failed step skips
-    # every later one, so a tag that is not on main never reaches here.
+  image:
+    # Runs after tag-guard. Holds no secret: the Dockerfile's RUN lines
+    # run in this container. The destinations only name the image inside
+    # image.tar; --no-push sends nothing anywhere.
     image: docker.io/martizih/kaniko:v1.28.5-alpine@sha256:6ba327d49f75147a44e39e8a977e9cde11b483832214b307ccf11f9da360693c
     commands:
       - |
         set -eu
-        # Registry login for kaniko. The file lives under /kaniko, which
-        # kaniko keeps out of the image; the token is never echoed or put
-        # on a command line.
-        AUTH="$(printf 'spy4x:%s' "$$GHCR_PUSH_TOKEN" | base64 | tr -d '\n')"
-        printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$$AUTH" > "$$DOCKER_CONFIG/config.json"
-        unset AUTH
         if [ -n "$${CI_COMMIT_TAG:-}" ]; then
           VERSION="$${CI_COMMIT_TAG#v}"
           MAJOR_MINOR="$(echo "$$VERSION" | cut -d. -f1,2)"
@@ -116,13 +127,47 @@ steps:
           --label "org.opencontainers.image.source=https://github.com/spy4x/oko.git" \
           --label "org.opencontainers.image.url=https://github.com/spy4x/oko" \
           --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --no-push \
+          --tar-path="$$CI_WORKSPACE/image.tar" \
           $$DESTINATIONS
-    environment:
-      GHCR_PUSH_TOKEN:
-        from_secret: GHCR_PUSH_TOKEN
     when:
       # Woodpecker ignores `branch` on tag events, so tags need their own
       # entry rather than relying on `branch: main` to exclude them.
+      - event: push
+        branch: main
+      - event: tag
+
+  push:
+    # Runs after image and the only step with the secret. It runs crane
+    # and nothing from this repository. It computes the tags itself from
+    # Woodpecker's variables instead of reading them from the workspace,
+    # which the build step could write to, so the image can only land in
+    # ghcr.io/spy4x/oko. The login file goes to DOCKER_CONFIG, outside
+    # the workspace, and the token never reaches a command line.
+    image: gcr.io/go-containerregistry/crane/debug:v0.22.1@sha256:e78770b31258a3846f878036d9c1f63fbe4c871f9f56990bf77fd95c013e3c1b
+    # The image has busybox under /busybox and no /bin/sh, which
+    # Woodpecker's default entrypoint expects.
+    entrypoint: ["/busybox/sh", "-c", "echo $$CI_SCRIPT | base64 -d | /busybox/sh -e"]
+    commands:
+      - |
+        set -eu
+        printf '%s' "$$GHCR_PUSH_TOKEN" | crane auth login ghcr.io -u spy4x --password-stdin
+        if [ -n "$${CI_COMMIT_TAG:-}" ]; then
+          VERSION="$${CI_COMMIT_TAG#v}"
+          MAJOR_MINOR="$(echo "$$VERSION" | cut -d. -f1,2)"
+          TAGS="$$VERSION $$MAJOR_MINOR latest"
+        else
+          TAGS="latest"
+        fi
+        for TAG in $$TAGS; do
+          echo "Pushing ghcr.io/spy4x/oko:$$TAG"
+          crane push "$$CI_WORKSPACE/image.tar" "ghcr.io/spy4x/oko:$$TAG"
+        done
+    environment:
+      DOCKER_CONFIG: /tmp/docker-config
+      GHCR_PUSH_TOKEN:
+        from_secret: GHCR_PUSH_TOKEN
+    when:
       - event: push
         branch: main
       - event: tag

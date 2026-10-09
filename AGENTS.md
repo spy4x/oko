@@ -5,7 +5,9 @@
 - **Language:** Go 1.25
 - **Runtime deps:** none (pure stdlib: `net/http`, `log/slog`, `html/template`, `context`, `sync`, `os/signal`, `strings`, `regexp`, `strconv`, `time`, `io`, `encoding/json`)
 - **Container:** distroless `static-debian12:nonroot` (~10 MB)
-- **CI:** Woodpecker on `golang:1.25-alpine`
+- **CI:** Woodpecker, repository untrusted (no privileged mode, no host
+  volumes). Tests on `golang:1.25-alpine`; the image is built and pushed
+  with kaniko, never through the agent's Docker socket
 
 ## Invariants
 

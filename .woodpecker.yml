@@ -1,20 +1,28 @@
 # Woodpecker CI for Oko.
 #
-# Two steps:
-#   check   — run on every push and PR. Tests + build sanity.
-#   publish — only on main branch pushes (and semver tags). Builds the
-#             docker image and pushes to ghcr.io/spy4x/oko. Uses the
-#             GHCR_PUSH_TOKEN secret stored in Woodpecker (not in this
-#             file — never commit tokens to source).
+# The repository is untrusted in Woodpecker: no privileged mode, no host
+# volumes, no extra network. Every step runs as a normal container, so a
+# pipeline cannot reach the agent's Docker daemon or the host it runs on.
 #
-# Why a `commands` step instead of woodpeckerci/plugin-docker-buildx:
-# the plugin ran the same Docker buildx flow but authenticated in a way
-# ghcr.io rejected with `insufficient_scope: authorization failed`,
-# even though the same PAT works fine from a manual `docker login` +
-# `docker push`. See issue #1 for the full investigation. Doing the
-# login ourselves via stdin + `docker login` matches what works locally.
+# Steps:
+#   check       — every push, PR and tag. Tests + build sanity.
+#   image-build — pull requests only. Builds the image with kaniko and
+#                 pushes nothing, with no secrets: proof the Dockerfile
+#                 builds before it is merged.
+#   tag-guard   — tags only. Fails unless the tagged commit is on main,
+#                 so a tag on an unmerged commit cannot publish an image.
+#   publish     — push to main and tags. Builds with kaniko and pushes to
+#                 ghcr.io/spy4x/oko with the GHCR_PUSH_TOKEN secret, which
+#                 lives in Woodpecker (never in this file).
 #
-# Auto-tag (kept from the plugin's `auto_tag: true`):
+# Why kaniko: it builds an image from a Dockerfile entirely in user space
+# inside an ordinary container, with no Docker daemon and no privileges.
+# The image is the maintained fork (osscontainertools/kaniko, published as
+# martizih/kaniko) that woodpeckerci/plugin-kaniko itself is built on; the
+# `-alpine` variant has a shell, so the step can compute tags and labels.
+# Google archived the original GoogleContainerTools/kaniko in 2025.
+#
+# Tags pushed:
 #   push to main              → :latest
 #   semver tag (vX.Y.Z push)  → :X.Y.Z, :X.Y, :latest
 #
@@ -22,6 +30,12 @@
 #   Woodpecker UI → repo → Secrets → add GHCR_PUSH_TOKEN
 #   Value: GitHub PAT with `write:packages` scope (classic `ghp_*` or
 #   fine-grained with Packages: write on spy4x/oko).
+#   Events: push and tag. Never pull_request.
+#
+# Every shell variable in a command is written `$$NAME`: Woodpecker
+# substitutes `$NAME` in this file before the step runs and blanks any
+# name it does not know, so a single `$` would erase the script's own
+# variables and the secret.
 
 when:
   event: [push, pull_request, tag]
@@ -39,45 +53,76 @@ steps:
       - go test -race -count=1 ./...
       - go build ./...
 
-  publish:
-    # Mount the agent's docker socket so the step's docker CLI talks to
-    # the host daemon directly. Avoids running a nested daemon (no
-    # `privileged` needed, no WOODPECKER_PLUGINS_PRIVILEGED / repo-trust
-    # requirement). Trade-off: in-container root == host root for the
-    # duration of the step — acceptable in this CI setup since the
-    # agent already runs as root.
-    #
-    # `docker:29` ships the CLI + buildx; the daemon comes from the
-    # mounted socket.
-    image: docker:29
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+  image-build:
+    image: docker.io/martizih/kaniko:v1.28.5-alpine@sha256:6ba327d49f75147a44e39e8a977e9cde11b483832214b307ccf11f9da360693c
     commands:
-      # `echo "$TOKEN" | docker login …` — TOKEN never lands on the
-      # command line (no shell history leak, no log exposure).
-      - echo "$GHCR_PUSH_TOKEN" | docker login ghcr.io -u spy4x --password-stdin
-      # Tag plan mirrors the old plugin's `auto_tag: true`:
-      #   main push      → :latest
-      #   semver tag     → :X.Y.Z + :X.Y + :latest
+      - >
+        /kaniko/executor
+        --context="dir://$$CI_WORKSPACE"
+        --dockerfile=Dockerfile
+        --no-push
+    when:
+      event: pull_request
+
+  tag-guard:
+    image: docker.io/alpine/git:v2.52.0@sha256:4a0e72d49596a1f5d3701aeedafdadc5c0da4062be4657c7bdc4017387f591cc
+    commands:
       - |
-        set -e
-        if [ -n "$CI_COMMIT_TAG" ]; then
-          VERSION="${CI_COMMIT_TAG#v}"
-          MAJOR_MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
-          TAGS="-t ghcr.io/spy4x/oko:${VERSION} -t ghcr.io/spy4x/oko:${MAJOR_MINOR} -t ghcr.io/spy4x/oko:latest"
+        set -eu
+        # The clone is shallow and holds only the tag, so fetch main's
+        # whole history before asking whether the commit is on it.
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          git fetch --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
         else
-          TAGS="-t ghcr.io/spy4x/oko:latest"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
         fi
-        docker buildx build --push --pull \
-          --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}" \
+        if ! git merge-base --is-ancestor "$$CI_COMMIT_SHA" refs/remotes/origin/main; then
+          echo "Tag $$CI_COMMIT_TAG points at $$CI_COMMIT_SHA, which is not on main. Refusing to publish." >&2
+          exit 1
+        fi
+        echo "Tag $$CI_COMMIT_TAG points at $$CI_COMMIT_SHA, which is on main."
+    when:
+      event: tag
+
+  publish:
+    # Runs after tag-guard: steps run in order and a failed step skips
+    # every later one, so a tag that is not on main never reaches here.
+    image: docker.io/martizih/kaniko:v1.28.5-alpine@sha256:6ba327d49f75147a44e39e8a977e9cde11b483832214b307ccf11f9da360693c
+    commands:
+      - |
+        set -eu
+        # Registry login for kaniko. The file lives under /kaniko, which
+        # kaniko keeps out of the image; the token is never echoed or put
+        # on a command line.
+        AUTH="$(printf 'spy4x:%s' "$$GHCR_PUSH_TOKEN" | base64 | tr -d '\n')"
+        printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$$AUTH" > "$$DOCKER_CONFIG/config.json"
+        unset AUTH
+        if [ -n "$${CI_COMMIT_TAG:-}" ]; then
+          VERSION="$${CI_COMMIT_TAG#v}"
+          MAJOR_MINOR="$(echo "$$VERSION" | cut -d. -f1,2)"
+          TAGS="$$VERSION $$MAJOR_MINOR latest"
+        else
+          TAGS="latest"
+        fi
+        DESTINATIONS=""
+        for TAG in $$TAGS; do
+          DESTINATIONS="$$DESTINATIONS --destination=ghcr.io/spy4x/oko:$$TAG"
+        done
+        # DESTINATIONS stays unquoted on purpose: one flag per tag.
+        /kaniko/executor \
+          --context="dir://$$CI_WORKSPACE" \
+          --dockerfile=Dockerfile \
+          --label "org.opencontainers.image.revision=$${CI_COMMIT_SHA}" \
           --label "org.opencontainers.image.source=https://github.com/spy4x/oko.git" \
           --label "org.opencontainers.image.url=https://github.com/spy4x/oko" \
           --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          $TAGS \
-          .
+          $$DESTINATIONS
     environment:
       GHCR_PUSH_TOKEN:
         from_secret: GHCR_PUSH_TOKEN
     when:
-      event: [push, tag]
-      branch: main
+      # Woodpecker ignores `branch` on tag events, so tags need their own
+      # entry rather than relying on `branch: main` to exclude them.
+      - event: push
+        branch: main
+      - event: tag

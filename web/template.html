@@ -526,13 +526,13 @@
                 <div class="service-name">{{ .Name }}</div>
                 <p class="service-description">{{ .Description }}</p>
               </a>
-              {{ if .Uptime }}
+              {{ if .Unknown }}
+              <span class="service-uptime service-uptime--unknown"
+                    title="Status unknown: gatus returned no health data for this service">unknown</span>
+              {{ else if .Uptime }}
               <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
                  class="service-uptime service-uptime--{{ .UptimeClass }}"
                  title="30-day uptime">{{ .Uptime }} ↗</a>
-              {{ else if .Unknown }}
-              <span class="service-uptime service-uptime--unknown"
-                    title="Status unknown: gatus returned no data for this service">unknown</span>
               {{ end }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
                 {{ .Product }}

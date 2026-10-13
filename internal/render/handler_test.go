@@ -654,6 +654,58 @@ func TestBuildPage_NoDataIsUnknownNotHealthy(t *testing.T) {
 	}
 }
 
+// A section where gatus gave no health answer for any service says
+// "unknown" in the counter and on every card, in words and not only by
+// the dashed border. One card still got an uptime number: that number
+// alone must not paint the card green (issue #11).
+func TestBuildPage_SectionWithNoHealthDataSaysUnknownOnEveryCard(t *testing.T) {
+	cfgJSON := `{
+	  "servers": [{ "name": "Home", "services": [
+	    { "name": "A", "url": "u", "endpoint": "home_a", "gatus_host": "uptime-cloud" },
+	    { "name": "B", "url": "u", "endpoint": "home_b", "gatus_host": "uptime-cloud" }
+	  ]}]
+	}`
+	h, _ := newHandlerWithProductionTemplate(t, cfgJSON, func(keys []string) map[string]gatus.Status {
+		uptime := 100.0
+		// home_a: both badges failed. home_b: only the uptime badge loaded.
+		return map[string]gatus.Status{
+			"uptime-cloud|home_b": {Uptime: &uptime, DetailURL: "https://uptime-cloud.example.com/endpoints/home_b"},
+		}
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+
+	if !strings.Contains(body, "0/2 healthy · 2 unknown") {
+		t.Errorf("expected counter '0/2 healthy · 2 unknown'; body:\n%s", body)
+	}
+	if !strings.Contains(body, `class="pill pill-unknown"`) {
+		t.Errorf("expected the section counter pill to be pill-unknown")
+	}
+	for _, bad := range []string{`class="pill pill-healthy"`, `class="pill pill-degraded"`, `class="pill pill--`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("unexpected %q in a section with no health data", bad)
+		}
+	}
+
+	cards := strings.Split(body, `<li class="service`)[1:]
+	if len(cards) != 2 {
+		t.Fatalf("expected 2 service cards, got %d", len(cards))
+	}
+	for i, card := range cards {
+		card, _, _ = strings.Cut(card, "</li>")
+		if !strings.HasPrefix(card, ` service--unknown"`) {
+			t.Errorf("card %d: expected class service--unknown", i)
+		}
+		if !strings.Contains(card, ">unknown</span>") {
+			t.Errorf("card %d: expected the word \"unknown\" on the card; got:\n%s", i, card)
+		}
+		if strings.Contains(card, "service-uptime--good") {
+			t.Errorf("card %d: an unknown service must not carry the green uptime pill; got:\n%s", i, card)
+		}
+	}
+}
+
 // A section with nothing but known-healthy services keeps the green pill
 // and no "unknown" suffix; one with a down service stays red even when
 // another service is unknown.

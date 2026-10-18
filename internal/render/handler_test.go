@@ -889,3 +889,20 @@ func TestPage_SectionUptimeIgnoresUnknownServices(t *testing.T) {
 	}
 }
 
+// A service without product_url renders no product link: an empty one
+// has no accessible name and opens the dashboard itself (issue #19).
+func TestPage_ServiceWithoutProductURLRendersNoProductLink(t *testing.T) {
+	body := renderProductionPage(t, `{"servers":[{"name":"S","services":[
+	  {"name":"Bare","url":"https://bare.example.com"},
+	  {"name":"Linked","url":"https://linked.example.com","product":"Gitea","product_url":"https://gitea.io"}
+	]}]}`, nil)
+	if strings.Contains(body, `href=""`) {
+		t.Errorf("found an empty link; body:\n%s", body)
+	}
+	if got := strings.Count(body, `class="service-product"`); got != 1 {
+		t.Errorf("expected 1 product link (Linked only), got %d", got)
+	}
+	if !strings.Contains(body, `href="https://gitea.io"`) {
+		t.Errorf("expected the product link for Linked")
+	}
+}

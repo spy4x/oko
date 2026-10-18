@@ -546,12 +546,14 @@
                  class="service-uptime service-uptime--{{ .UptimeClass }}"
                  title="30-day uptime">{{ .Uptime }} ↗</a>
               {{ end }}
+              {{ if .ProductURL }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
-                {{ .Product }}
+                {{ or .Product .ProductURL }}
                 <svg viewBox="0 0 16 16" width="9" height="9" aria-hidden="true">
                   <path fill="currentColor" d="M10 1v2h2.3L7.7 7.6l1.4 1.4L13.7 4.4V7h2V1h-5.7zM3 3v10h10V8h-2v3H5V5h3V3H3z"/>
                 </svg>
               </a>
+              {{ end }}
             </li>
             {{ end }}
           </ul>

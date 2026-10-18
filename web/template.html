@@ -381,10 +381,16 @@
         border-color: var(--uptime-bad-bd);
         background: var(--uptime-bad-bg);
       }
+      /* Unknown and neutral (a down card's number) use the secondary
+         text colour: the muted one fails 4.5:1 contrast on the pill. */
       .service-uptime--unknown {
+        color: var(--text-secondary);
         border-style: dashed;
         border-color: var(--border-hover);
-        cursor: help;
+      }
+      span.service-uptime--unknown { cursor: help; }
+      .service-uptime--neutral {
+        color: var(--text-secondary);
       }
       /* No transform here — the parent .service:hover already lifts the
          whole card; stacking makes the pill drift relative to its card
@@ -456,7 +462,9 @@
         .header h1 { font-size: 24px; }
         .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
         .service { min-height: 148px; }
-        .service-main { padding: 16px 10px 38px; }
+        /* Top padding clears the uptime pill: on a narrow card the
+           pill and the centred icon would otherwise overlap. */
+        .service-main { padding: 36px 10px 38px; }
         .service-icon { font-size: 28px; }
         .service-name { font-size: 13px; }
         .service-description { font-size: 11px; }
@@ -527,19 +535,27 @@
                 <p class="service-description">{{ .Description }}</p>
               </a>
               {{ if .Unknown }}
+              {{ if .DetailURL }}
+              <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
+                 class="service-uptime service-uptime--unknown"
+                 title="Status unknown: gatus returned no health data for this service. Open its uptime page">unknown ↗</a>
+              {{ else }}
               <span class="service-uptime service-uptime--unknown"
                     title="Status unknown: gatus returned no health data for this service">unknown</span>
+              {{ end }}
               {{ else if .Uptime }}
               <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
                  class="service-uptime service-uptime--{{ .UptimeClass }}"
                  title="30-day uptime">{{ .Uptime }} ↗</a>
               {{ end }}
+              {{ if .ProductURL }}
               <a href="{{ .ProductURL | safeURL }}" target="_blank" rel="noopener noreferrer" class="service-product" title="{{ .Product }}">
-                {{ .Product }}
+                {{ or .Product .ProductURL }}
                 <svg viewBox="0 0 16 16" width="9" height="9" aria-hidden="true">
                   <path fill="currentColor" d="M10 1v2h2.3L7.7 7.6l1.4 1.4L13.7 4.4V7h2V1h-5.7zM3 3v10h10V8h-2v3H5V5h3V3H3z"/>
                 </svg>
               </a>
+              {{ end }}
             </li>
             {{ end }}
           </ul>

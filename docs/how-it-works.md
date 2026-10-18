@@ -20,8 +20,9 @@ What oko does, what it deliberately leaves out, and how the code is laid out.
 - **Unknown ≠ down, and unknown ≠ healthy.** When gatus gives no
   answer for a service, the card gets a dashed "unknown" marker
   instead of a red border, and the section counter reports it
-  separately ("18/22 healthy · 4 unknown"). Failed upstream is not
-  the same as failed service.
+  separately ("18/22 healthy · 4 unknown"). Its uptime number is left
+  out of the section's, and the marker links to the gatus page when
+  oko knows it. Failed upstream is not the same as failed service.
 - **`?refresh=1`** bypasses the cache for one request — the next
   request still hits the warm cache, but the forced refetch happens
   synchronously, blocking the caller until done.

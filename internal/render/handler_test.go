@@ -697,7 +697,7 @@ func TestBuildPage_SectionWithNoHealthDataSaysUnknownOnEveryCard(t *testing.T) {
 		if !strings.HasPrefix(card, ` service--unknown"`) {
 			t.Errorf("card %d: expected class service--unknown", i)
 		}
-		if !strings.Contains(card, ">unknown</span>") {
+		if !strings.Contains(card, ">unknown</span>") && !strings.Contains(card, ">unknown ↗</a>") {
 			t.Errorf("card %d: expected the word \"unknown\" on the card; got:\n%s", i, card)
 		}
 		if strings.Contains(card, "service-uptime--good") {
@@ -752,3 +752,140 @@ func TestBuildPage_FooterUptimeLinkFromConfig(t *testing.T) {
 		t.Errorf("expected footer link to the first UPTIME_HOSTS entry; body:\n%s", w.Body.String())
 	}
 }
+
+// renderProductionPage renders the real template for one status map and
+// returns the body.
+func renderProductionPage(t *testing.T, cfgJSON string, status map[string]gatus.Status) string {
+	t.Helper()
+	h, _ := newHandlerWithProductionTemplate(t, cfgJSON, func([]string) map[string]gatus.Status { return status })
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d; body:\n%s", w.Code, w.Body.String())
+	}
+	return w.Body.String()
+}
+
+// cardOf returns the rendered <li> of the service with the given
+// data-endpoint key.
+func cardOf(t *testing.T, body, key string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(body, `data-endpoint="`+key+`"`)
+	if !ok {
+		t.Fatalf("no card for %q in body:\n%s", key, body)
+	}
+	card, _, _ := strings.Cut(rest, "</li>")
+	return card
+}
+
+// The whole path, not a stubbed status map: gatus answers every badge
+// request with an error, the real client, cache and template run, and
+// the section must read "unknown", never "healthy" (issue #11).
+func TestPage_SectionWhoseBadgesFailToLoadReadsUnknown(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "gatus is down", http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+	fqdn := strings.TrimPrefix(srv.URL, "https://")
+	short, _, _ := strings.Cut(fqdn, ".")
+
+	client := gatus.NewClient([]string{fqdn}, 2*time.Second)
+	client.SetHTTPClient(srv.Client())
+	c := cache.New(time.Hour, client.FetchAll)
+	t.Cleanup(c.Stop)
+	cfg, _ := writeConfig(t, `{"servers":[{"name":"Home","services":[
+	  {"name":"A","url":"u","endpoint":"home_a","gatus_host":"`+short+`"},
+	  {"name":"B","url":"u","endpoint":"home_b","gatus_host":"`+short+`"}
+	]}]}`)
+	h, err := NewHandler(c, cfg, filepath.Join("..", "..", "web", "template.html"),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	body := w.Body.String()
+
+	if !strings.Contains(body, `<span class="pill pill-unknown">`) || !strings.Contains(body, "0/2 healthy · 2 unknown") {
+		t.Errorf("expected the unknown counter '0/2 healthy · 2 unknown'; body:\n%s", body)
+	}
+	if strings.Contains(body, `class="pill pill-healthy"`) || strings.Contains(body, `service-uptime--good"`) {
+		t.Errorf("a section with no data must not read healthy; body:\n%s", body)
+	}
+	for _, key := range []string{short + "|home_a", short + "|home_b"} {
+		card := cardOf(t, body, key)
+		if !strings.Contains(card, `<span class="service-uptime service-uptime--unknown"`) || !strings.Contains(card, ">unknown</span>") {
+			t.Errorf("card %s should say unknown; got:\n%s", key, card)
+		}
+	}
+}
+
+// A down service whose 30-day uptime is still high must not show the
+// green uptime pill on its red card (issue #19).
+func TestPage_DownCardShowsNoGreenUptimePill(t *testing.T) {
+	down := false
+	uptime := 99.8
+	body := renderProductionPage(t, `{"servers":[{"name":"S","services":[
+	  {"name":"D","url":"u","endpoint":"d","gatus_host":"uptime-cloud"}
+	]}]}`, map[string]gatus.Status{
+		"uptime-cloud|d": {Healthy: &down, Uptime: &uptime, DetailURL: "https://uptime-cloud.example.com/endpoints/d"},
+	})
+	card := cardOf(t, body, "uptime-cloud|d")
+	if !strings.Contains(card, `class="service-uptime service-uptime--neutral"`) || !strings.Contains(card, "99.80% ↗") {
+		t.Errorf("down card should show its number in the neutral pill; got:\n%s", card)
+	}
+	if strings.Contains(card, "service-uptime--good") {
+		t.Errorf("down card carries the green uptime pill; got:\n%s", card)
+	}
+}
+
+// An unknown card links to the service's gatus page whenever oko knows
+// the address, and stays plain text when it does not (issue #19).
+func TestPage_UnknownCardLinksToGatusWhenAddressKnown(t *testing.T) {
+	uptime := 100.0
+	body := renderProductionPage(t, `{"servers":[{"name":"S","services":[
+	  {"name":"K","url":"u","endpoint":"k","gatus_host":"uptime-cloud"},
+	  {"name":"N","url":"u","endpoint":"n","gatus_host":"uptime-cloud"}
+	]}]}`, map[string]gatus.Status{
+		// k: the health badge failed, the uptime badge loaded. n: both failed.
+		"uptime-cloud|k": {Uptime: &uptime, DetailURL: "https://uptime-cloud.example.com/endpoints/k"},
+	})
+	known := cardOf(t, body, "uptime-cloud|k")
+	if !strings.Contains(known, `<a href="https://uptime-cloud.example.com/endpoints/k"`) ||
+		!strings.Contains(known, `class="service-uptime service-uptime--unknown"`) ||
+		!strings.Contains(known, ">unknown ↗</a>") {
+		t.Errorf("unknown card with a known address should link to gatus; got:\n%s", known)
+	}
+	unreached := cardOf(t, body, "uptime-cloud|n")
+	if !strings.Contains(unreached, `<span class="service-uptime service-uptime--unknown"`) || strings.Contains(unreached, "endpoints/") {
+		t.Errorf("unknown card without an address should be plain text; got:\n%s", unreached)
+	}
+}
+
+// The section's uptime number never comes from a service whose card
+// says "unknown" (issue #19).
+func TestPage_SectionUptimeIgnoresUnknownServices(t *testing.T) {
+	up := true
+	unknownUptime, upUptime := 100.0, 91.0
+	body := renderProductionPage(t, `{"servers":[
+	  {"name":"Mixed","services":[
+	    {"name":"U","url":"u","endpoint":"u","gatus_host":"uptime-cloud"},
+	    {"name":"A","url":"u","endpoint":"a","gatus_host":"uptime-cloud"}
+	  ]},
+	  {"name":"OnlyUnknown","services":[
+	    {"name":"V","url":"u","endpoint":"v","gatus_host":"uptime-cloud"}
+	  ]}
+	]}`, map[string]gatus.Status{
+		"uptime-cloud|u": {Uptime: &unknownUptime},
+		"uptime-cloud|a": {Healthy: &up, Uptime: &upUptime},
+		"uptime-cloud|v": {Uptime: &unknownUptime},
+	})
+	mixed, only, _ := strings.Cut(body, `data-section="OnlyUnknown"`)
+	if !strings.Contains(mixed, "91.00% · 30d") || strings.Contains(mixed, "100.00% · 30d") {
+		t.Errorf("Mixed section should show 91.00%%, not the unknown service's 100%%; got:\n%s", mixed)
+	}
+	if !strings.Contains(only, `<span class="pill">—</span>`) || strings.Contains(only, "100.00% · 30d") {
+		t.Errorf("a section of unknown services should show no uptime number; got:\n%s", only)
+	}
+}
+

@@ -72,8 +72,8 @@ type ServiceView struct {
 	Down        bool
 	Unknown     bool
 	Uptime      string // formatted "99.95%" or ""
-	UptimeClass string // CSS modifier for the pill: "good"/"ok"/"warn"/"bad"/""
-	DetailURL   string // gatus per-endpoint detail page (set when fetch ok)
+	UptimeClass string // CSS modifier for the pill: "good"/"transition"/"warn"/"bad", "neutral" when down, ""
+	DetailURL   string // gatus per-endpoint detail page (set when either badge loaded)
 	Endpoint    string
 }
 
@@ -153,7 +153,8 @@ func fetchStatuses(ctx context.Context, c *cache.Cache, keys []string, force boo
 // Per-section Counter shows "healthy/total", plus the unknown count when
 // there is one: a service gatus gave no answer for is not healthy.
 // Per-section Uptime shows the max 30-day uptime across that section's
-// services with known numbers, i.e. the best service, not the worst.
+// services with known health and a known number, i.e. the best service,
+// not the worst.
 func buildPage(domain string, file config.FileConfig, status map[string]gatus.Status) PageData {
 	title := file.Title
 	if title == "" {
@@ -192,7 +193,10 @@ func buildPage(domain string, file config.FileConfig, status map[string]gatus.St
 			default:
 				healthy++
 			}
-			if st.Uptime != nil {
+			// An unknown service's number stays out of the section's
+			// uptime: its own card hides it, so the header must not
+			// show it either.
+			if st.Uptime != nil && !sv.Unknown {
 				if !haveUptime || *st.Uptime > maxUptime {
 					maxUptime = *st.Uptime
 					haveUptime = true
@@ -262,6 +266,13 @@ func serviceViewFrom(s config.Service, domain string, st gatus.Status) ServiceVi
 	if st.Uptime != nil {
 		sv.Uptime = fmt.Sprintf("%.2f%%", *st.Uptime)
 		sv.UptimeClass = uptimeClass(st.Uptime)
+		// A down card never wears the tier colour: a short outage
+		// leaves the 30-day number green, and a green pill on a red
+		// card reads as a contradiction (the section pill follows the
+		// same rule).
+		if sv.Down {
+			sv.UptimeClass = "neutral"
+		}
 	}
 	return sv
 }

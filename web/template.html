@@ -381,10 +381,16 @@
         border-color: var(--uptime-bad-bd);
         background: var(--uptime-bad-bg);
       }
+      /* Unknown and neutral (a down card's number) use the secondary
+         text colour: the muted one fails 4.5:1 contrast on the pill. */
       .service-uptime--unknown {
+        color: var(--text-secondary);
         border-style: dashed;
         border-color: var(--border-hover);
-        cursor: help;
+      }
+      span.service-uptime--unknown { cursor: help; }
+      .service-uptime--neutral {
+        color: var(--text-secondary);
       }
       /* No transform here — the parent .service:hover already lifts the
          whole card; stacking makes the pill drift relative to its card
@@ -527,8 +533,14 @@
                 <p class="service-description">{{ .Description }}</p>
               </a>
               {{ if .Unknown }}
+              {{ if .DetailURL }}
+              <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
+                 class="service-uptime service-uptime--unknown"
+                 title="Status unknown: gatus returned no health data for this service. Open its uptime page">unknown ↗</a>
+              {{ else }}
               <span class="service-uptime service-uptime--unknown"
                     title="Status unknown: gatus returned no health data for this service">unknown</span>
+              {{ end }}
               {{ else if .Uptime }}
               <a href="{{ .DetailURL | safeURL }}" target="_blank" rel="noopener noreferrer"
                  class="service-uptime service-uptime--{{ .UptimeClass }}"

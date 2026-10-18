@@ -462,7 +462,9 @@
         .header h1 { font-size: 24px; }
         .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
         .service { min-height: 148px; }
-        .service-main { padding: 16px 10px 38px; }
+        /* Top padding clears the uptime pill: on a narrow card the
+           pill and the centred icon would otherwise overlap. */
+        .service-main { padding: 36px 10px 38px; }
         .service-icon { font-size: 28px; }
         .service-name { font-size: 13px; }
         .service-description { font-size: 11px; }

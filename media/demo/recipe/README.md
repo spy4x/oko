@@ -39,7 +39,9 @@ re-encodes the last raw take in under a minute, without recording again. A new r
 
 - `record.ts`: stages oko, gatus and the services, records the shots and writes the raw take and the
   captions. Every frame is a screenshot with a fixed time on screen, and the pointer glides one
-  frame per 1/30 s, so a busy machine slows the recording, not the video.
+  frame per 1/30 s, so a busy machine slows the recording, not the video. The page is zoomed to 1.5
+  (`ZOOM`), so card names stay readable where the clip plays about 528 px wide, and the shots scroll
+  between the Home and Cloud sections.
 - `encode.ts`: title and end cards, burned-in captions (`fonts/`: IBM Plex Sans, OFL), music, the
   two video files and the posters, and the checks.
 - `pointer.js`, `keys.js`: the drawn pointer and the keycaps, from the global `demo-video` skill.

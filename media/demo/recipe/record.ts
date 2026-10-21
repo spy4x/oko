@@ -30,6 +30,8 @@ const IMAGES = {
   nginx: "nginx@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d",
 }
 const FPS = 30
+/** The page zoom: card names stay readable when the clip plays about 528 px wide. */
+const ZOOM = 1.5
 /** The editor's states, as edit.tape screenshots them, with their time on screen and captions. */
 const EDITOR: { file: string; seconds: number; caption?: string }[] = [
   { file: "edit-1.png", seconds: 2.8, caption: "To add a service, open its config.json" },
@@ -264,20 +266,14 @@ async function recordShots(url: string, take: Take, edit: () => Promise<string>)
       timezoneId: "UTC",
       locale: "en-US",
     })
-    const page = await context.newPage()
-    // Shrink the page just enough that its last card ends above the caption band.
-    await page.goto(url, { waitUntil: "networkidle" })
-    const bottom = await page.locator(".section").last().evaluate((el) =>
-      el.getBoundingClientRect().bottom
-    )
-    const zoom = Math.min(1, Math.floor(((H - BAND - 24) / bottom) * 100) / 100)
-    log(`page bottom ${Math.round(bottom)} px, zoom ${zoom}`)
+    // Bigger page, so card names stay readable where the clip plays about 528 px wide.
     await context.addInitScript(`addEventListener("DOMContentLoaded", () =>
-      document.body.style.zoom = "${zoom}")`)
+      document.body.style.zoom = "${ZOOM}")`)
     const pointer = { x: 1060, y: 150 }
     await context.addInitScript(`window.__demoPointerStart = ${JSON.stringify(pointer)}`)
     await context.addInitScript({ path: join(HERE, "pointer.js") })
     await context.addInitScript({ path: join(HERE, "keys.js") })
+    const page = await context.newPage()
     const settle = async () => {
       await page.evaluate(() => document.fonts.ready.then(() => true))
       await page.waitForTimeout(300)
@@ -295,18 +291,50 @@ async function recordShots(url: string, take: Take, edit: () => Promise<string>)
       if (!box) throw new Error(`no card ${name}`)
       return { x: Math.round(box.x + box.width * 0.55), y: Math.round(box.y + box.height * 0.45) }
     }
+    /** Scrolls, one frame per 1/30 s with ease-in-out, so `y` (page px) is the top of the view. */
+    const scrollTo = async (y: number) => {
+      const from = await page.evaluate(() => scrollY)
+      const to = await page.evaluate(
+        (y) => Math.max(0, Math.min(y, document.documentElement.scrollHeight - innerHeight)),
+        y,
+      )
+      if (Math.abs(to - from) < 2) return
+      const steps = Math.round(0.7 * FPS)
+      for (let i = 1; i <= steps; i++) {
+        await page.evaluate(
+          (y) => globalThis.scrollTo(0, y),
+          Math.round(from + (to - from) * ease(i / steps)),
+        )
+        await take.shot(page, 1 / FPS)
+      }
+    }
+    /** Scrolls so the Cloud section's heading sits near the top of the view. */
+    const toCloud = async () => {
+      const box = await page.locator(".section").nth(1).boundingBox()
+      if (!box) throw new Error("no Cloud section")
+      await scrollTo((await page.evaluate(() => scrollY)) + box.y - 24)
+      const cards = await page.locator(".section").nth(1).boundingBox()
+      if (cards && cards.y + cards.height > H - BAND) {
+        throw new Error(
+          `the Cloud section ends at ${
+            Math.round(cards.y + cards.height)
+          } px, under the caption band`,
+        )
+      }
+    }
 
     // 1. The dashboard, then the Cloud section's counter.
     take.say("Every service on one page, with its 30-day uptime")
     await take.shot(page, 3.4)
     take.say("Each server counts what is healthy, down or unknown")
+    await toCloud()
     const counter = await page.locator(".section").nth(1).locator(".pill").first().boundingBox()
     if (!counter) throw new Error("no section counter")
     await glide(page, take, pointer, {
       x: Math.round(counter.x + counter.width / 2),
       y: Math.round(counter.y + counter.height + 14),
     })
-    await take.shot(page, 3.0)
+    await take.shot(page, 2.8)
 
     // 2. The editor's states (vhs), while the browser waits.
     const states = await edit()
@@ -326,13 +354,15 @@ async function recordShots(url: string, take: Take, edit: () => Promise<string>)
     await page.reload({ waitUntil: "networkidle" })
     await settle()
     await take.shot(page, 0.7)
+    await toCloud()
     await glide(page, take, pointer, await card("Speed test"))
     await take.shot(page, 2.4)
 
     // 4. Search: `/` focuses the box (oko's own autofocus is best effort), typing filters.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
     take.say("Press / and type to filter by name, product or description")
-    await take.shot(page, 0.5)
+    await scrollTo(0)
+    await take.shot(page, 0.3)
     await press(page, take, 0.6, "/")
     await press(page, take, 0.24, "p")
     await press(page, take, 0.24, "h")
@@ -343,15 +373,16 @@ async function recordShots(url: string, take: Take, edit: () => Promise<string>)
 
     // 5. The down card, then the dashed unknown card.
     take.say("A red border: gatus says this service is down")
+    await toCloud()
     await glide(page, take, pointer, await card("Email"))
-    await take.shot(page, 2.8)
+    await take.shot(page, 2.6)
     take.say("No data from gatus: unknown, never a false green")
     await glide(page, take, pointer, await card("File sync"))
     await take.shot(page, 3.0)
 
-    // 6. The whole dashboard, pointer out of the way.
+    // 6. The section, pointer out of the way.
     take.say("Self-hosted, open source, one small Go binary")
-    await glide(page, take, pointer, { x: 1180, y: 120 })
+    await glide(page, take, pointer, { x: 1200, y: 60 })
     await take.shot(page, 3.0)
     take.say(null)
     await context.close()

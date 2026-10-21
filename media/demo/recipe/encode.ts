@@ -240,6 +240,7 @@ export async function encode() {
   const cues = parseVtt(await Deno.readTextFile(join(DEMO, "captions.vtt")))
   if (!cues.length) throw new Error("captions.vtt holds no captions")
   for (const c of cues) {
+    if (c.text.length > 64) throw new Error(`"${c.text}" is longer than one line (64 characters)`)
     // At least 2.5 s, and long enough to read at about 15 characters a second.
     if (c.end - c.start < Math.max(2.5, c.text.length / 15)) {
       throw new Error(`"${c.text}" shows for ${(c.end - c.start).toFixed(1)} s, too short to read`)

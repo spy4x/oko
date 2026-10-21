@@ -1,0 +1,20 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@1.1.2",
+    "playwright": "npm:playwright@1.63.0"
+  },
+  "tasks": {
+    "record": "deno run -A record.ts",
+    "encode": "deno run -A encode.ts"
+  },
+  "fmt": {
+    "semiColons": false,
+    "lineWidth": 100
+  },
+  "compilerOptions": {
+    "lib": [
+      "deno.ns",
+      "dom"
+    ]
+  }
+}

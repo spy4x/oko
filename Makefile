@@ -19,4 +19,11 @@ fmt:
 vet:
 	go vet ./...
 
-.PHONY: build run test fmt vet
+# The demo video in media/demo/: see media/demo/recipe/README.md.
+demo-video:
+	cd media/demo/recipe && deno task record
+
+demo-video-encode:
+	cd media/demo/recipe && deno task encode
+
+.PHONY: build run test fmt vet demo-video demo-video-encode

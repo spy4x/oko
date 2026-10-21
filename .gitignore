@@ -21,3 +21,4 @@ coverage.txt
 
 # Local catalog edits (use config.example.json as the template)
 config.json
+/media/demo/.raw/

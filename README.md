@@ -12,7 +12,7 @@
 [Self-hosting](docs/self-hosting.md) · [Configuration](docs/configuration.md) ·
 [How it works](docs/how-it-works.md)
 
-![The oko dashboard on desktop and phone: a search box, then a "Home" section with a healthy counter and a 30-day uptime pill, then a grid of service cards, each with an icon, a name, a one-line description and its own uptime percentage.](docs/screenshots/dashboard.webp)
+[![The oko demo video, 43 seconds: a dashboard of self-hosted services with 30-day uptime, a new service pasted into config.json and shown after a reload, search, a down card and an unknown one.](media/demo/poster.webp)](https://antonshubin.com/tools/oko)
 
 </div>
 

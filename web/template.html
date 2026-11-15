@@ -73,6 +73,15 @@
         margin: 0 auto;
       }
 
+      /* Optional HEADER_STRIP_URL iframe: edge to edge, so the negative
+         margins cancel the body padding. */
+      .header-strip {
+        display: block;
+        width: calc(100% + 40px);
+        margin: -48px -20px 32px;
+        border: 0;
+      }
+
       .header {
         text-align: center;
         margin-bottom: 32px;
@@ -459,6 +468,7 @@
 
       @media (max-width: 640px) {
         body { padding: 24px 12px 60px; }
+        .header-strip { width: calc(100% + 24px); margin: -24px -12px 24px; }
         .header h1 { font-size: 24px; }
         .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
         .service { min-height: 148px; }
@@ -483,6 +493,11 @@
   </head>
 
   <body>
+    {{ if .HeaderStripURL }}
+    <iframe class="header-strip" src="{{ .HeaderStripURL }}" height="{{ .HeaderStripHeight }}"
+            title="Site navigation"
+            sandbox="allow-scripts allow-popups allow-top-navigation-by-user-activation allow-popups-to-escape-sandbox"></iframe>
+    {{ end }}
     <div class="page">
       <header class="header">
         <h1>{{ .Title }}</h1>
@@ -567,6 +582,7 @@
         Generated {{ .GeneratedAt }} ·
         {{ if .UptimeURL }}<a href="{{ .UptimeURL | safeURL }}" target="_blank" rel="noopener">uptime</a> ·{{ end }}
         <a href="?refresh=1">refresh</a>
+        {{ if .PoweredBy }}· Powered by <a href="https://github.com/spy4x/oko" target="_blank" rel="noopener">oko</a>{{ end }}
       </footer>
     </div>
 

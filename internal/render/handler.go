@@ -43,6 +43,10 @@ type PageData struct {
 	UptimeURL   string // first gatus instance, for the footer link; "" hides it
 	GeneratedAt string
 	Sections    []SectionView
+
+	PoweredBy         bool   // footer credit to the oko repo
+	HeaderStripURL    string // iframe src above the header; "" hides it
+	HeaderStripHeight int    // iframe height in px
 }
 
 // SectionView is one rendered group on the page (Home, Cloud, ...).
@@ -115,6 +119,9 @@ func NewHandler(c *cache.Cache, cfg *config.Config, templatePath string, logger 
 		if len(cfg.UptimeHosts) > 0 {
 			data.UptimeURL = "https://" + cfg.UptimeHosts[0]
 		}
+		data.PoweredBy = cfg.PoweredBy
+		data.HeaderStripURL = cfg.HeaderStripURL
+		data.HeaderStripHeight = cfg.HeaderStripHeight
 
 		var buf bytes.Buffer
 		if err := parsed.ExecuteTemplate(&buf, tmplName, data); err != nil {

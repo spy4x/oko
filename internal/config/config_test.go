@@ -214,6 +214,121 @@ func TestConfig_File_MissingFile(t *testing.T) {
 	}
 }
 
+// setRequiredEnv sets the vars Load needs, so a test can focus on one
+// optional var.
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("DOMAIN", "example.com")
+	t.Setenv("UPTIME_HOSTS", "uptime.example.com")
+}
+
+func TestLoad_BrandingIsOffByDefault(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("POWERED_BY", "")
+	t.Setenv("HEADER_STRIP_URL", "")
+	t.Setenv("HEADER_STRIP_HEIGHT", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.PoweredBy {
+		t.Error("PoweredBy on without POWERED_BY")
+	}
+	if c.HeaderStripURL != "" {
+		t.Errorf("HeaderStripURL = %q, want empty", c.HeaderStripURL)
+	}
+	if c.HeaderStripHeight != 48 {
+		t.Errorf("HeaderStripHeight = %d, want default 48", c.HeaderStripHeight)
+	}
+}
+
+func TestLoad_PoweredByAcceptsTrueAndOneOnly(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"true", true},
+		{"TRUE", true},
+		{"1", true},
+		{"false", false},
+		{"0", false},
+		{"yes", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("POWERED_BY", tc.in)
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.PoweredBy != tc.want {
+				t.Errorf("POWERED_BY=%q → %v, want %v", tc.in, c.PoweredBy, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_HeaderStripAcceptsHTTPAndHTTPSURLs(t *testing.T) {
+	for _, in := range []string{"https://example.com/strip", "http://example.com"} {
+		t.Run(in, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("HEADER_STRIP_URL", in)
+			t.Setenv("HEADER_STRIP_HEIGHT", "64")
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.HeaderStripURL != in {
+				t.Errorf("HeaderStripURL = %q, want %q", c.HeaderStripURL, in)
+			}
+			if c.HeaderStripHeight != 64 {
+				t.Errorf("HeaderStripHeight = %d, want 64", c.HeaderStripHeight)
+			}
+		})
+	}
+}
+
+func TestLoad_HeaderStripRejectsBadURLs(t *testing.T) {
+	tests := []struct{ name, in, wantErr string }{
+		{"javascript scheme", "javascript:alert(1)", "scheme must be http or https"},
+		{"data scheme", "data:text/html,<script>alert(1)</script>", "scheme must be http or https"},
+		{"relative path", "/strip", "scheme must be http or https"},
+		{"missing host", "https:///strip", "host is empty"},
+		{"unparsable", "https://exa mple.com", "HEADER_STRIP_URL"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("HEADER_STRIP_URL", tc.in)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("HEADER_STRIP_URL=%q loaded without error", tc.in)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoad_HeaderStripHeightRejectsNonPositiveAndNonInteger(t *testing.T) {
+	for _, in := range []string{"0", "-5", "48px", "1.5"} {
+		t.Run(in, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("HEADER_STRIP_URL", "https://example.com")
+			t.Setenv("HEADER_STRIP_HEIGHT", in)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("HEADER_STRIP_HEIGHT=%q loaded without error", in)
+			}
+			if !strings.Contains(err.Error(), "HEADER_STRIP_HEIGHT") {
+				t.Errorf("error %q does not name HEADER_STRIP_HEIGHT", err)
+			}
+		})
+	}
+}
+
 // helpers
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {

@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -103,6 +104,11 @@ type Config struct {
 	CacheTTL      time.Duration
 	ConfigPath    string // JSON file path (env: CONFIG_PATH)
 
+	// Optional branding, all off by default.
+	PoweredBy         bool   // footer credit to the oko repo (env: POWERED_BY)
+	HeaderStripURL    string // iframe src above the header; "" hides it (env: HEADER_STRIP_URL)
+	HeaderStripHeight int    // iframe height in px (env: HEADER_STRIP_HEIGHT, default 48)
+
 	// Cached file content (loaded on first request; refreshed on mtime change).
 	mu        sync.RWMutex
 	file      FileConfig
@@ -135,15 +141,47 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("UPTIME_HOSTS produced no entries")
 	}
 
+	stripURL, err := headerStripURL(os.Getenv("HEADER_STRIP_URL"))
+	if err != nil {
+		return Config{}, err
+	}
+	stripHeight, err := positiveInt("HEADER_STRIP_HEIGHT", 48)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		Port:          port,
-		Domain:        domain,
-		UptimeHosts:   hosts,
-		UptimeTimeout: time.Duration(envInt("UPTIME_TIMEOUT_SECS", 5)) * time.Second,
-		CacheTTL:      time.Duration(envInt("CACHE_TTL_SECS", 60)) * time.Second,
-		ConfigPath:    envOr("CONFIG_PATH", "/app/config.json"),
-		filePath:      envOr("CONFIG_PATH", "/app/config.json"),
+		Port:              port,
+		Domain:            domain,
+		UptimeHosts:       hosts,
+		UptimeTimeout:     time.Duration(envInt("UPTIME_TIMEOUT_SECS", 5)) * time.Second,
+		CacheTTL:          time.Duration(envInt("CACHE_TTL_SECS", 60)) * time.Second,
+		ConfigPath:        envOr("CONFIG_PATH", "/app/config.json"),
+		filePath:          envOr("CONFIG_PATH", "/app/config.json"),
+		PoweredBy:         envBool("POWERED_BY"),
+		HeaderStripURL:    stripURL,
+		HeaderStripHeight: stripHeight,
 	}, nil
+}
+
+// headerStripURL accepts "" (strip off) or an absolute http(s) URL with a
+// host. Anything else, a javascript: URL included, is a startup error.
+func headerStripURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("HEADER_STRIP_URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("HEADER_STRIP_URL: scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("HEADER_STRIP_URL: host is empty")
+	}
+	return raw, nil
 }
 
 // WithLogger attaches a logger for config-load warnings.
@@ -281,6 +319,30 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envBool is true only for "true" or "1" (case-insensitive); anything
+// else, unset included, is false.
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return v == "true" || v == "1"
+}
+
+// positiveInt reads key as an integer above zero, or def when unset.
+// Unlike envInt, a bad value is an error, not a silent fallback.
+func positiveInt(key string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s: must be above 0, got %d", key, n)
+	}
+	return n, nil
 }
 
 func envInt(key string, def int) int {

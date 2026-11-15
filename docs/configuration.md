@@ -61,6 +61,9 @@ services within a server. Empty server groups are skipped.
 | `CACHE_TTL_SECS`    | `60`         | In-memory cache TTL                                  |
 | `TEMPLATE_PATH`     | `/app/web/template.html` | Override template path                       |
 | `CONFIG_PATH`       | `/app/config.json`       | Override catalog path                        |
+| `POWERED_BY`        | off          | `true` or `1` adds "Powered by oko" to the footer    |
+| `HEADER_STRIP_URL`  | off          | http(s) page shown in a sandboxed iframe above the header; it cannot read the dashboard |
+| `HEADER_STRIP_HEIGHT` | `48`       | Height of that iframe in px, a whole number above 0  |
 
 ## Health parsing
 

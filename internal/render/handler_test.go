@@ -906,3 +906,83 @@ func TestPage_ServiceWithoutProductURLRendersNoProductLink(t *testing.T) {
 		t.Errorf("expected the product link for Linked")
 	}
 }
+
+// renderWithBranding renders the real template with the branding fields
+// of cfg set by edit, and returns the body.
+func renderWithBranding(t *testing.T, edit func(*config.Config)) string {
+	t.Helper()
+	h, cfg := newHandlerWithProductionTemplate(t, `{"servers":[{"name":"S","services":[{"name":"A","url":"u"}]}]}`, nil)
+	edit(cfg)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d; body:\n%s", w.Code, w.Body.String())
+	}
+	return w.Body.String()
+}
+
+func TestPage_NoBrandingWhenUnset(t *testing.T) {
+	body := renderWithBranding(t, func(*config.Config) {})
+	if strings.Contains(body, "<iframe") {
+		t.Errorf("header strip rendered without HEADER_STRIP_URL; body:\n%s", body)
+	}
+	if strings.Contains(body, "Powered by") {
+		t.Errorf("powered-by rendered without POWERED_BY; body:\n%s", body)
+	}
+}
+
+func TestPage_PoweredByLinksToRepoWhenOn(t *testing.T) {
+	body := renderWithBranding(t, func(c *config.Config) { c.PoweredBy = true })
+	_, footer, _ := strings.Cut(body, `<footer class="footer">`)
+	if !strings.Contains(footer, `Powered by <a href="https://github.com/spy4x/oko"`) {
+		t.Errorf("footer has no powered-by link; footer:\n%s", footer)
+	}
+}
+
+func TestPage_HeaderStripIsSandboxedIframeAboveHeader(t *testing.T) {
+	body := renderWithBranding(t, func(c *config.Config) {
+		c.HeaderStripURL = "https://example.com/strip"
+		c.HeaderStripHeight = 56
+	})
+	frame, _, ok := strings.Cut(body, `<header class="header">`)
+	if !ok {
+		t.Fatalf("no header; body:\n%s", body)
+	}
+	for _, want := range []string{
+		`<iframe class="header-strip" src="https://example.com/strip" height="56"`,
+		`title="Site navigation"`,
+		`sandbox="allow-scripts allow-popups allow-top-navigation-by-user-activation allow-popups-to-escape-sandbox"`,
+	} {
+		if !strings.Contains(frame, want) {
+			t.Errorf("missing %s above the header; body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(frame, "allow-same-origin") {
+		t.Errorf("strip may reach the dashboard: allow-same-origin set")
+	}
+}
+
+func TestPage_HeaderStripURLIsEscaped(t *testing.T) {
+	body := renderWithBranding(t, func(c *config.Config) {
+		c.HeaderStripURL = `https://example.com/?q="><script>alert(1)</script>`
+		c.HeaderStripHeight = 48
+	})
+	if strings.Contains(body, `"><script>alert(1)`) {
+		t.Errorf("strip URL broke out of the src attribute; body:\n%s", body)
+	}
+	if !strings.Contains(body, `src="https://example.com/?q=%22%3e%3cscript%3ealert%281%29%3c/script%3e"`) {
+		t.Errorf("strip URL not percent-encoded in src; body:\n%s", body)
+	}
+}
+
+// Config.Load rejects a javascript: URL; the template must refuse it too,
+// in case a later change skips the check.
+func TestPage_HeaderStripJavascriptURLIsNeutralised(t *testing.T) {
+	body := renderWithBranding(t, func(c *config.Config) {
+		c.HeaderStripURL = "javascript:alert(1)"
+		c.HeaderStripHeight = 48
+	})
+	if strings.Contains(body, `src="javascript:`) {
+		t.Errorf("javascript: URL reached the iframe src; body:\n%s", body)
+	}
+}
